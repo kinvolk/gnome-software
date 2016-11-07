@@ -94,7 +94,7 @@ notify_offline_update_available (GsUpdateMonitor *monitor)
 		g_notification_add_button (n, _("Restart & Install"), "app.reboot-and-install");
 		g_notification_set_default_action_and_target (n, "app.set-mode", "s", "updates");
 		g_application_send_notification (monitor->application, "updates-available", n);
-	} else {
+	}/* else {
 		title = _("Software Updates Available");
 		body = _("Important OS and application updates are ready to be installed");
 		n = g_notification_new (title);
@@ -103,7 +103,7 @@ notify_offline_update_available (GsUpdateMonitor *monitor)
 		g_notification_add_button_with_target (n, _("View"), "app.set-mode", "s", "updates");
 		g_notification_set_default_action_and_target (n, "app.set-mode", "s", "updates");
 		g_application_send_notification (monitor->application, "updates-available", n);
-	}
+	}*/
 }
 
 static gboolean
