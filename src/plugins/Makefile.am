@@ -48,6 +48,11 @@ plugin_LTLIBRARIES =					\
 	libgs_plugin_icons.la				\
 	libgs_plugin_ubuntuone.la
 
+if HAVE_APT
+plugin_LTLIBRARIES +=					\
+	libgs_plugin_apt.la
+endif
+
 if HAVE_SNAP
 plugin_LTLIBRARIES += libgs_plugin_snap.la
 endif
@@ -230,6 +235,14 @@ libgs_plugin_rpm_la_SOURCES = gs-plugin-rpm.c
 libgs_plugin_rpm_la_LIBADD = $(GS_PLUGIN_LIBS) $(RPM_LIBS)
 libgs_plugin_rpm_la_LDFLAGS = -module -avoid-version
 libgs_plugin_rpm_la_CFLAGS = $(GS_PLUGIN_CFLAGS) $(WARN_CFLAGS)
+endif
+
+if HAVE_APT
+libgs_plugin_apt_la_SOURCES = \
+	gs-plugin-apt.cc
+libgs_plugin_apt_la_LIBADD = $(GS_PLUGIN_LIBS) -lapt-pkg
+libgs_plugin_apt_la_LDFLAGS = -module -avoid-version
+libgs_plugin_apt_la_CFLAGS = $(GS_PLUGIN_CFLAGS) $(WARN_CFLAGS)
 endif
 
 if HAVE_STEAM
