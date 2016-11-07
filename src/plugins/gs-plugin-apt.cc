@@ -591,10 +591,6 @@ gs_plugin_refine_app (GsPlugin *plugin,
 	if (info == NULL)
 		return TRUE;
 
-	origin = get_origin (info);
-	gs_app_set_origin (app, origin);
-	gs_app_set_origin_ui (app, info->origin);
-
 	if (gs_app_get_state (app) == AS_APP_STATE_UNKNOWN) {
 		if (info->installed_version != NULL) {
 			if (info->update_version != NULL) {
@@ -671,8 +667,6 @@ gs_plugin_add_installed (GsPlugin *plugin,
 		gs_app_set_management_plugin (app, "apt");
 		gs_app_set_name (app, GS_APP_QUALITY_LOWEST, info->name);
 		gs_app_add_source (app, info->name);
-		gs_app_set_origin (app, origin);
-		gs_app_set_origin_ui (app, info->origin);
 		gs_app_set_state (app, AS_APP_STATE_INSTALLED);
 		gs_app_list_add (list, app);
 	}
