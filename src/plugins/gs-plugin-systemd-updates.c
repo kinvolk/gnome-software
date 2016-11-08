@@ -24,6 +24,8 @@
 #define I_KNOW_THE_PACKAGEKIT_GLIB2_API_IS_SUBJECT_TO_CHANGE
 #include <packagekit-glib2/packagekit.h>
 
+#include "packagekit-common.h"
+
 #include <gnome-software.h>
 
 /*
@@ -34,6 +36,7 @@
 
 struct GsPluginData {
 	GFileMonitor		*monitor;
+	GPermission		*permission;
 };
 
 void
@@ -48,6 +51,17 @@ gs_plugin_destroy (GsPlugin *plugin)
 	GsPluginData *priv = gs_plugin_get_data (plugin);
 	if (priv->monitor != NULL)
 		g_object_unref (priv->monitor);
+}
+
+static void
+gs_plugin_systemd_updates_permission_cb (GPermission *permission,
+					 GParamSpec *pspec,
+					 gpointer data)
+{
+	GsPlugin *plugin = GS_PLUGIN (data);
+	gboolean ret = g_permission_get_allowed (permission) ||
+			g_permission_get_can_acquire (permission);
+	gs_plugin_set_allow_updates (plugin, ret);
 }
 
 static void
@@ -67,11 +81,22 @@ gs_plugin_setup (GsPlugin *plugin, GCancellable *cancellable, GError **error)
 {
 	GsPluginData *priv = gs_plugin_get_data (plugin);
 	priv->monitor = pk_offline_get_prepared_monitor (cancellable, error);
-	if (priv->monitor == NULL)
+	if (priv->monitor == NULL) {
+		gs_utils_error_convert_gio (error);
 		return FALSE;
+	}
 	g_signal_connect (priv->monitor, "changed",
 			  G_CALLBACK (gs_plugin_systemd_updates_changed_cb),
 			  plugin);
+
+	/* check if we have permission to trigger the update */
+	priv->permission = gs_utils_get_permission (
+		"org.freedesktop.packagekit.trigger-offline-update");
+	if (priv->permission != NULL) {
+		g_signal_connect (priv->permission, "notify",
+				  G_CALLBACK (gs_plugin_systemd_updates_permission_cb),
+				  plugin);
+	}
 	return TRUE;
 }
 
@@ -95,7 +120,7 @@ gs_plugin_add_updates (GsPlugin *plugin,
 		}
 		g_set_error (error,
 			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
+			     GS_PLUGIN_ERROR_INVALID_FORMAT,
 			     "Failed to get prepared IDs: %s",
 			     error_local->message);
 		return FALSE;
@@ -123,6 +148,7 @@ gs_plugin_add_updates (GsPlugin *plugin,
 		gs_app_set_update_version (app, split[PK_PACKAGE_ID_VERSION]);
 		gs_app_set_state (app, AS_APP_STATE_UPDATABLE);
 		gs_app_set_kind (app, AS_APP_KIND_GENERIC);
+		gs_app_set_size_download (app, 0);
 		gs_app_list_add (list, app);
 
 		/* save in the cache */
@@ -169,8 +195,12 @@ gs_plugin_update (GsPlugin *plugin,
 	for (i = 0; i < gs_app_list_length (apps); i++) {
 		GsApp *app = gs_app_list_index (apps, i);
 		if (gs_plugin_systemd_updates_requires_trigger (app)) {
-			return pk_offline_trigger (PK_OFFLINE_ACTION_REBOOT,
-						   cancellable, error);
+			if (!pk_offline_trigger (PK_OFFLINE_ACTION_REBOOT,
+						 cancellable, error)) {
+				gs_plugin_packagekit_error_convert (error);
+				return FALSE;
+			}
+			return TRUE;
 		}
 	}
 	return TRUE;

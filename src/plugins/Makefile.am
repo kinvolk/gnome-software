@@ -12,15 +12,18 @@ AM_CPPFLAGS =						\
 	$(FWUPD_CFLAGS)					\
 	$(JSON_GLIB_CFLAGS)				\
 	$(LIMBA_CFLAGS)					\
+	$(GUDEV_CFLAGS)					\
 	$(OSTREE_CFLAGS)				\
 	$(FLATPAK_CFLAGS)				\
 	$(RPM_CFLAGS)					\
 	$(OAUTH_CFLAGS)					\
+	$(SNAP_CFLAGS)					\
 	-DI_KNOW_THE_GNOME_SOFTWARE_API_IS_SUBJECT_TO_CHANGE	\
 	-DBINDIR=\"$(bindir)\"				\
 	-DDATADIR=\"$(datadir)\"			\
 	-DG_LOG_DOMAIN=\"GsPlugin\"			\
 	-DLIBDIR=\""$(libdir)"\"			\
+	-DLIBEXECDIR=\""$(libexecdir)"\"		\
 	-DLOCALSTATEDIR=\""$(localstatedir)"\"		\
 	-DSBINDIR=\"$(sbindir)\"			\
 	-DSYSCONFDIR=\""$(sysconfdir)"\"		\
@@ -44,8 +47,18 @@ plugin_LTLIBRARIES =					\
 	libgs_plugin_repos.la				\
 	libgs_plugin_fedora-tagger-usage.la		\
 	libgs_plugin_icons.la				\
-	libgs_plugin_snap.la				\
 	libgs_plugin_ubuntuone.la
+
+if HAVE_EXTERNAL_APPSTREAM
+plugin_LTLIBRARIES += libgs_plugin_external-appstream.la
+
+libexec_SCRIPTS =			\
+	gnome-software-install-appstream
+endif
+
+if HAVE_SNAP
+plugin_LTLIBRARIES += libgs_plugin_snap.la
+endif
 
 if HAVE_PACKAGEKIT
 plugin_LTLIBRARIES +=					\
@@ -63,6 +76,10 @@ endif
 
 if HAVE_WEBAPPS
 plugin_LTLIBRARIES += libgs_plugin_epiphany.la
+endif
+
+if HAVE_GUDEV
+plugin_LTLIBRARIES += libgs_plugin_modalias.la
 endif
 
 if HAVE_UBUNTU_REVIEWS
@@ -112,6 +129,21 @@ libgs_plugin_dpkg_la_LIBADD = $(GS_PLUGIN_LIBS)
 libgs_plugin_dpkg_la_LDFLAGS = -module -avoid-version
 libgs_plugin_dpkg_la_CFLAGS = $(GS_PLUGIN_CFLAGS) $(WARN_CFLAGS)
 
+libgs_plugin_external_appstream_la_SOURCES =		\
+	gs-plugin-external-appstream.c
+libgs_plugin_external_appstream_la_LIBADD = $(GS_PLUGIN_LIBS) $(SOUP_LIBS)
+libgs_plugin_external_appstream_la_LDFLAGS = -module -avoid-version
+libgs_plugin_external_appstream_la_CFLAGS = $(GS_PLUGIN_CFLAGS) $(WARN_CFLAGS) $(SOUP_CFLAGS)
+
+gnome-software-install-appstream: gnome-software-install-appstream.in Makefile
+	$(AM_V_GEN) sed -e "s|@localstatedir[@]|$(localstatedir)|g" $< > $@
+
+EXTRA_DIST =						\
+	gnome-software-install-appstream.in
+
+CLEANFILES =						\
+	gnome-software-install-appstream
+
 libgs_plugin_key_colors_la_SOURCES = gs-plugin-key-colors.c
 libgs_plugin_key_colors_la_LIBADD = $(GS_PLUGIN_LIBS)
 libgs_plugin_key_colors_la_LDFLAGS = -module -avoid-version
@@ -128,6 +160,13 @@ libgs_plugin_fedora_distro_upgrades_la_SOURCES = gs-plugin-fedora-distro-upgrade
 libgs_plugin_fedora_distro_upgrades_la_LIBADD = $(GS_PLUGIN_LIBS) $(JSON_GLIB_LIBS) $(SOUP_LIBS)
 libgs_plugin_fedora_distro_upgrades_la_LDFLAGS = -module -avoid-version
 libgs_plugin_fedora_distro_upgrades_la_CFLAGS = $(GS_PLUGIN_CFLAGS) $(JSON_GLIB_CFLAGS) $(WARN_CFLAGS)
+
+if HAVE_GUDEV
+libgs_plugin_modalias_la_SOURCES = gs-plugin-modalias.c
+libgs_plugin_modalias_la_LIBADD = $(GS_PLUGIN_LIBS) $(GUDEV_LIBS)
+libgs_plugin_modalias_la_LDFLAGS = -module -avoid-version
+libgs_plugin_modalias_la_CFLAGS = $(GS_PLUGIN_CFLAGS) $(WARN_CFLAGS)
+endif
 
 libgs_plugin_provenance_la_SOURCES = gs-plugin-provenance.c
 libgs_plugin_provenance_la_LIBADD = $(GS_PLUGIN_LIBS)
@@ -301,7 +340,10 @@ libgs_plugin_packagekit_local_la_LIBADD = $(GS_PLUGIN_LIBS) $(PACKAGEKIT_LIBS)
 libgs_plugin_packagekit_local_la_LDFLAGS = -module -avoid-version
 libgs_plugin_packagekit_local_la_CFLAGS = $(GS_PLUGIN_CFLAGS) $(WARN_CFLAGS)
 
-libgs_plugin_systemd_updates_la_SOURCES = gs-plugin-systemd-updates.c
+libgs_plugin_systemd_updates_la_SOURCES =		\
+	gs-plugin-systemd-updates.c			\
+	packagekit-common.c				\
+	packagekit-common.h
 libgs_plugin_systemd_updates_la_LIBADD = $(GS_PLUGIN_LIBS) $(PACKAGEKIT_LIBS)
 libgs_plugin_systemd_updates_la_LDFLAGS = -module -avoid-version
 libgs_plugin_systemd_updates_la_CFLAGS = $(GS_PLUGIN_CFLAGS) $(WARN_CFLAGS)
@@ -314,7 +356,7 @@ libgs_plugin_fwupd_la_CFLAGS = $(GS_PLUGIN_CFLAGS) $(WARN_CFLAGS)
 endif
 
 libgs_plugin_packagekit_history_la_SOURCES = gs-plugin-packagekit-history.c
-libgs_plugin_packagekit_history_la_LIBADD = $(GS_PLUGIN_LIBS)
+libgs_plugin_packagekit_history_la_LIBADD = $(GS_PLUGIN_LIBS) $(PACKAGEKIT_LIBS)
 libgs_plugin_packagekit_history_la_LDFLAGS = -module -avoid-version
 libgs_plugin_packagekit_history_la_CFLAGS = $(GS_PLUGIN_CFLAGS) $(WARN_CFLAGS)
 
@@ -340,20 +382,23 @@ libgs_plugin_packagekit_origin_la_LDFLAGS = -module -avoid-version
 libgs_plugin_packagekit_origin_la_CFLAGS = $(GS_PLUGIN_CFLAGS) $(WARN_CFLAGS)
 
 libgs_plugin_packagekit_proxy_la_SOURCES = gs-plugin-packagekit-proxy.c
-libgs_plugin_packagekit_proxy_la_LIBADD = $(GS_PLUGIN_LIBS)
+libgs_plugin_packagekit_proxy_la_LIBADD = $(GS_PLUGIN_LIBS) $(PACKAGEKIT_LIBS)
 libgs_plugin_packagekit_proxy_la_LDFLAGS = -module -avoid-version
 libgs_plugin_packagekit_proxy_la_CFLAGS = $(GS_PLUGIN_CFLAGS) $(WARN_CFLAGS)
 
+if HAVE_SNAP
 libgs_plugin_snap_la_SOURCES =				\
 	gs-plugin-snap.c				\
 	gs-snapd.h					\
 	gs-snapd.c
 libgs_plugin_snap_la_LIBADD =				\
 	$(GS_PLUGIN_LIBS)				\
+	$(SNAP_LIBS)					\
 	$(SOUP_LIBS)					\
 	$(JSON_GLIB_LIBS)
 libgs_plugin_snap_la_LDFLAGS = -module -avoid-version
 libgs_plugin_snap_la_CFLAGS = $(GS_PLUGIN_CFLAGS) $(WARN_CFLAGS)
+endif
 
 libgs_plugin_ubuntuone_la_SOURCES =			\
 	gs-plugin-ubuntuone.c

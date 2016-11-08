@@ -26,6 +26,9 @@
 
 G_BEGIN_DECLS
 
+GsApp		*gs_appstream_create_app		(GsPlugin	*plugin,
+							 AsApp		*item,
+							 GError		**error);
 gboolean	 gs_appstream_refine_app		(GsPlugin	*plugin,
 							 GsApp		*app,
 							 AsApp		*item,
@@ -33,6 +36,35 @@ gboolean	 gs_appstream_refine_app		(GsPlugin	*plugin,
 GsApp		*gs_appstream_create_runtime		(GsPlugin	*plugin,
 							 GsApp		*parent,
 							 const gchar	*runtime);
+gboolean	 gs_appstream_store_search		(GsPlugin	*plugin,
+							 AsStore	*store,
+							 gchar		**values,
+							 GsAppList	*list,
+							 GCancellable	*cancellable,
+							 GError		**error);
+gboolean	 gs_appstream_store_add_categories	(GsPlugin	*plugin,
+							 AsStore	*store,
+							 GPtrArray	*list,
+							 GCancellable	*cancellable,
+							 GError		**error);
+gboolean	 gs_appstream_store_add_category_apps	(GsPlugin	*plugin,
+							 AsStore	*store,
+							 GsCategory	*category,
+							 GsAppList	*list,
+							 GCancellable	*cancellable,
+							 GError		**error);
+gboolean	 gs_appstream_add_popular		(GsPlugin	*plugin,
+							 AsStore	*store,
+							 GsAppList	*list,
+							 GCancellable	*cancellable,
+							 GError		**error);
+gboolean	 gs_appstream_add_featured		(GsPlugin	*plugin,
+							 AsStore	*store,
+							 GsAppList	*list,
+							 GCancellable	*cancellable,
+							 GError		**error);
+void		 gs_appstream_add_extra_info		(GsPlugin	*plugin,
+							 AsApp		*app);
 
 G_END_DECLS
 

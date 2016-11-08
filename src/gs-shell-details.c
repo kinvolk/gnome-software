@@ -22,10 +22,12 @@
 
 #include "config.h"
 
+#include <locale.h>
 #include <string.h>
 #include <glib/gi18n.h>
 
 #include "gs-common.h"
+#include "gs-content-rating.h"
 
 #include "gs-shell-details.h"
 #include "gs-app-private.h"
@@ -135,6 +137,12 @@ struct _GsShellDetails
 	GtkWidget		*popover_license_free;
 	GtkWidget		*popover_license_nonfree;
 	GtkWidget		*popover_license_unknown;
+	GtkWidget		*popover_content_rating;
+	GtkWidget		*label_content_rating_title;
+	GtkWidget		*label_content_rating_message;
+	GtkWidget		*label_content_rating_none;
+	GtkWidget		*button_details_rating_value;
+	GtkWidget		*label_details_rating_title;
 };
 
 G_DEFINE_TYPE (GsShellDetails, gs_shell_details, GS_TYPE_PAGE)
@@ -452,17 +460,14 @@ gs_shell_details_refresh_progress (GsShellDetails *self)
 	case AS_APP_STATE_INSTALLING:
 		percentage = gs_app_get_progress (self->app);
 		if (percentage > 0) {
-			gtk_widget_set_visible (self->label_progress_percentage, FALSE);
-			gtk_widget_set_visible (self->progressbar_top, FALSE);
-		} else {
 			g_autofree gchar *str = g_strdup_printf ("%u%%", percentage);
 			gtk_label_set_label (GTK_LABEL (self->label_progress_percentage), str);
 			gtk_widget_set_visible (self->label_progress_percentage, TRUE);
 			gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR (self->progressbar_top),
 						       (gdouble) percentage / 100.f);
 			gtk_widget_set_visible (self->progressbar_top, TRUE);
+			break;
 		}
-		break;
 	default:
 		gtk_widget_set_visible (self->label_progress_percentage, FALSE);
 		gtk_widget_set_visible (self->progressbar_top, FALSE);
@@ -603,6 +608,8 @@ gs_shell_details_refresh_screenshots (GsShellDetails *self)
 	case AS_APP_KIND_CODEC:
 	case AS_APP_KIND_ADDON:
 	case AS_APP_KIND_SOURCE:
+	case AS_APP_KIND_FIRMWARE:
+	case AS_APP_KIND_DRIVER:
 		gtk_widget_set_visible (self->box_details_screenshot_fallback, FALSE);
 		break;
 	default:
@@ -846,27 +853,29 @@ gs_shell_details_refresh_all (GsShellDetails *self)
 	}
 
 	/* set the installed size */
-	if (gs_app_get_size_installed (self->app) == GS_APP_SIZE_UNKNOWABLE) {
-		gtk_widget_hide (self->label_details_size_installed_title);
-		gtk_widget_hide (self->label_details_size_installed_value);
-	} else {
+	if (gs_app_get_size_installed (self->app) != GS_APP_SIZE_UNKNOWABLE &&
+	    gs_app_get_size_installed (self->app) != 0) {
 		g_autofree gchar *size = NULL;
 		size = g_format_size (gs_app_get_size_installed (self->app));
 		gtk_label_set_label (GTK_LABEL (self->label_details_size_installed_value), size);
 		gtk_widget_show (self->label_details_size_installed_title);
 		gtk_widget_show (self->label_details_size_installed_value);
+	} else {
+		gtk_widget_hide (self->label_details_size_installed_title);
+		gtk_widget_hide (self->label_details_size_installed_value);
 	}
 
 	/* set the download size */
-	if (gs_app_get_size_download (self->app) == GS_APP_SIZE_UNKNOWABLE) {
-		gtk_widget_hide (self->label_details_size_download_title);
-		gtk_widget_hide (self->label_details_size_download_value);
-	} else {
+	if (!gs_app_is_installed (self->app) &&
+	    gs_app_get_size_download (self->app) != GS_APP_SIZE_UNKNOWABLE) {
 		g_autofree gchar *size = NULL;
 		size = g_format_size (gs_app_get_size_download (self->app));
 		gtk_label_set_label (GTK_LABEL (self->label_details_size_download_value), size);
 		gtk_widget_show (self->label_details_size_download_title);
 		gtk_widget_show (self->label_details_size_download_value);
+	} else {
+		gtk_widget_hide (self->label_details_size_download_title);
+		gtk_widget_hide (self->label_details_size_download_value);
 	}
 
 	/* set the updated date */
@@ -923,17 +932,6 @@ gs_shell_details_refresh_all (GsShellDetails *self)
 		gtk_label_set_label (GTK_LABEL (self->label_details_origin_value), C_("origin", "Unknown"));
 	} else {
 		gtk_label_set_label (GTK_LABEL (self->label_details_origin_value), tmp);
-	}
-	switch (gs_app_get_state (self->app)) {
-	case AS_APP_STATE_INSTALLED:
-	case AS_APP_STATE_UPDATABLE:
-	case AS_APP_STATE_AVAILABLE:
-	case AS_APP_STATE_AVAILABLE_LOCAL:
-		gtk_widget_set_visible (self->label_details_origin_value, TRUE);
-		break;
-	default:
-		gtk_widget_set_visible (self->label_details_origin_value, FALSE);
-		break;
 	}
 
 	/* set MyLanguage kudo */
@@ -1102,7 +1100,7 @@ typedef struct {
 	GsShellDetails		*self;
 	AsReview		*review;
 	GsApp			*app;
-	GsPluginReviewAction		 action;
+	GsPluginAction		 action;
 } GsShellDetailsReviewHelper;
 
 static void
@@ -1181,7 +1179,7 @@ gs_shell_details_app_set_review_cb (GObject *source,
 
 static void
 gs_shell_details_review_button_clicked_cb (GsReviewRow *row,
-					   GsPluginReviewAction action,
+					   GsPluginAction action,
 					   GsShellDetails *self)
 {
 	GsShellDetailsReviewHelper *helper = g_new0 (GsShellDetailsReviewHelper, 1);
@@ -1209,15 +1207,15 @@ gs_shell_details_refresh_reviews (GsShellDetails *self)
 	guint64 possible_actions = 0;
 	guint i;
 	struct {
-		GsPluginReviewAction action;
+		GsPluginAction action;
 		const gchar *plugin_func;
 	} plugin_vfuncs[] = {
-		{ GS_PLUGIN_REVIEW_ACTION_UPVOTE,	"gs_plugin_review_upvote" },
-		{ GS_PLUGIN_REVIEW_ACTION_DOWNVOTE,	"gs_plugin_review_downvote" },
-		{ GS_PLUGIN_REVIEW_ACTION_REPORT,	"gs_plugin_review_report" },
-		{ GS_PLUGIN_REVIEW_ACTION_SUBMIT,	"gs_plugin_review_submit" },
-		{ GS_PLUGIN_REVIEW_ACTION_REMOVE,	"gs_plugin_review_remove" },
-		{ GS_PLUGIN_REVIEW_ACTION_LAST,	NULL }
+		{ GS_PLUGIN_ACTION_REVIEW_UPVOTE,	"gs_plugin_review_upvote" },
+		{ GS_PLUGIN_ACTION_REVIEW_DOWNVOTE,	"gs_plugin_review_downvote" },
+		{ GS_PLUGIN_ACTION_REVIEW_REPORT,	"gs_plugin_review_report" },
+		{ GS_PLUGIN_ACTION_REVIEW_SUBMIT,	"gs_plugin_review_submit" },
+		{ GS_PLUGIN_ACTION_REVIEW_REMOVE,	"gs_plugin_review_remove" },
+		{ GS_PLUGIN_ACTION_LAST,	NULL }
 	};
 
 	/* show or hide the entire reviews section */
@@ -1278,7 +1276,7 @@ gs_shell_details_refresh_reviews (GsShellDetails *self)
 		return;
 
 	/* find what the plugins support */
-	for (i = 0; plugin_vfuncs[i].action != GS_PLUGIN_REVIEW_ACTION_LAST; i++) {
+	for (i = 0; plugin_vfuncs[i].action != GS_PLUGIN_ACTION_LAST; i++) {
 		if (gs_plugin_loader_get_plugin_supported (self->plugin_loader,
 							   plugin_vfuncs[i].plugin_func)) {
 			possible_actions |= 1u << plugin_vfuncs[i].action;
@@ -1300,10 +1298,10 @@ gs_shell_details_refresh_reviews (GsShellDetails *self)
 		g_signal_connect (row, "button-clicked",
 				  G_CALLBACK (gs_shell_details_review_button_clicked_cb), self);
 		if (as_review_get_flags (review) & AS_REVIEW_FLAG_SELF) {
-			actions = possible_actions & 1 << GS_PLUGIN_REVIEW_ACTION_REMOVE;
+			actions = possible_actions & 1 << GS_PLUGIN_ACTION_REVIEW_REMOVE;
 			show_review_button = FALSE;
 		} else {
-			actions = possible_actions & ~(1u << GS_PLUGIN_REVIEW_ACTION_REMOVE);
+			actions = possible_actions & ~(1u << GS_PLUGIN_ACTION_REVIEW_REMOVE);
 		}
 		gs_review_row_set_actions (GS_REVIEW_ROW (row), actions);
 		gtk_container_add (GTK_CONTAINER (self->list_box_reviews), row);
@@ -1312,6 +1310,100 @@ gs_shell_details_refresh_reviews (GsShellDetails *self)
 
 	/* show the button only if the user never reviewed */
 	gtk_widget_set_visible (self->button_review, show_review_button);
+}
+
+static void
+gs_shell_details_app_refine2_cb (GObject *source,
+				GAsyncResult *res,
+				gpointer user_data)
+{
+	GsPluginLoader *plugin_loader = GS_PLUGIN_LOADER (source);
+	GsShellDetails *self = GS_SHELL_DETAILS (user_data);
+	g_autoptr(GError) error = NULL;
+	if (!gs_plugin_loader_app_refine_finish (plugin_loader, res, &error)) {
+		g_warning ("failed to refine %s: %s",
+			   gs_app_get_id (self->app),
+			   error->message);
+		return;
+	}
+	gs_shell_details_refresh_reviews (self);
+
+	/* seems a good place */
+	gs_shell_profile_dump (self->shell);
+}
+
+static void
+gs_shell_details_app_refine2 (GsShellDetails *self)
+{
+	gs_plugin_loader_app_refine_async (self->plugin_loader, self->app,
+					   GS_PLUGIN_REFINE_FLAGS_REQUIRE_RATING |
+					   GS_PLUGIN_REFINE_FLAGS_REQUIRE_REVIEW_RATINGS |
+					   GS_PLUGIN_REFINE_FLAGS_REQUIRE_REVIEWS,
+					   self->cancellable,
+					   gs_shell_details_app_refine2_cb,
+					   self);
+}
+
+static void
+gs_shell_details_content_rating_set_css (GtkWidget *widget, guint age)
+{
+	g_autoptr(GString) css = g_string_new (NULL);
+	const gchar *color_bg = NULL;
+	const gchar *color_fg = "#ffffff";
+	if (age >= 18) {
+		color_bg = "#ee2222";
+	} else if (age >= 15) {
+		color_bg = "#f1c000";
+	} else if (age >= 12) {
+		color_bg = "#2a97c9";
+	} else if (age >= 5) {
+		color_bg = "#3f756c";
+	} else {
+		color_bg = "#009d66";
+	}
+	g_string_append_printf (css, "color: %s;\n", color_fg);
+	g_string_append_printf (css, "background-color: %s;\n", color_bg);
+	gs_utils_widget_set_css_simple (widget, css->str);
+}
+
+static void
+gs_shell_details_refresh_content_rating (GsShellDetails *self)
+{
+	AsContentRating *content_rating;
+	GsContentRatingSystem system;
+	guint age = 0;
+	gchar *str;
+	const gchar *display = NULL;
+	g_autofree gchar *locale = NULL;
+
+	/* get the content rating system from the locale */
+	locale = g_strdup (setlocale (LC_MESSAGES, NULL));
+	str = g_strstr_len (locale, -1, ".UTF-8");
+	if (str != NULL)
+		*str = '\0';
+	str = g_strstr_len (locale, -1, ".utf8");
+	if (str != NULL)
+		*str = '\0';
+	system = gs_utils_content_rating_system_from_locale (locale);
+	g_debug ("content rating system is guessed as %s from %s",
+		 gs_content_rating_system_to_str (system),
+		 locale);
+
+	/* only show the button if a game and has a content rating */
+	content_rating = gs_app_get_content_rating (self->app);
+	if (content_rating != NULL) {
+		age = as_content_rating_get_minimum_age (content_rating);
+		display = gs_utils_content_rating_age_to_str (system, age);
+	}
+	if (display != NULL) {
+		gtk_button_set_label (GTK_BUTTON (self->button_details_rating_value), display);
+		gtk_widget_set_visible (self->button_details_rating_value, TRUE);
+		gtk_widget_set_visible (self->label_details_rating_title, TRUE);
+		gs_shell_details_content_rating_set_css (self->button_details_rating_value, age);
+	} else {
+		gtk_widget_set_visible (self->button_details_rating_value, FALSE);
+		gtk_widget_set_visible (self->label_details_rating_title, FALSE);
+	}
 }
 
 static void
@@ -1338,7 +1430,7 @@ gs_shell_details_app_refine_cb (GObject *source,
 	    gs_app_get_state (self->app) == AS_APP_STATE_UNKNOWN) {
 		g_autofree gchar *str = NULL;
 
-		str = g_strdup_printf (_("Could not find '%s'"), gs_app_get_id (self->app));
+		str = g_strdup_printf (_("Could not find “%s”"), gs_app_get_id (self->app));
 		gtk_label_set_text (GTK_LABEL (self->label_failed), str);
 		gs_shell_details_set_state (self, GS_SHELL_DETAILS_STATE_FAILED);
 		return;
@@ -1352,19 +1444,11 @@ gs_shell_details_app_refine_cb (GObject *source,
 	gs_shell_details_refresh_addons (self);
 	gs_shell_details_refresh_reviews (self);
 	gs_shell_details_refresh_all (self);
+	gs_shell_details_refresh_content_rating (self);
 	gs_shell_details_set_state (self, GS_SHELL_DETAILS_STATE_READY);
-}
 
-static void
-gs_shell_details_failed_response_cb (GtkDialog *dialog,
-				     gint response,
-				     GsShellDetails *self)
-{
-	/* unmap the dialog */
-	gtk_widget_destroy (GTK_WIDGET (dialog));
-
-	/* switch away from the details view that failed to load */
-	gs_shell_set_mode (self->shell, GS_SHELL_MODE_OVERVIEW);
+	/* do 2nd stage refine */
+	gs_shell_details_app_refine2 (self);
 }
 
 static void
@@ -1382,38 +1466,16 @@ gs_shell_details_file_to_app_cb (GObject *source,
 		g_signal_handlers_disconnect_by_func (self->app, gs_shell_details_notify_state_changed_cb, self);
 		g_signal_handlers_disconnect_by_func (self->app, gs_shell_details_progress_changed_cb, self);
 	}
+
 	/* save app */
 	g_set_object (&self->app,
 		      gs_plugin_loader_file_to_app_finish (plugin_loader,
 							   res,
 							   &error));
 	if (self->app == NULL) {
-		GtkWidget *dialog;
-		const gchar *msg;
-
-		if (g_error_matches (error,
-				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_NOT_SUPPORTED)) {
-			/* TRANSLATORS: the file format was not recognised by
-			 * any plugin, e.g. if you try installing a .tar.gz */
-			msg = _("The file is not supported.");
-		} else {
-			msg = error->message;
-		}
-
-		dialog = gtk_message_dialog_new (gs_shell_get_window (self->shell),
-		                                 GTK_DIALOG_MODAL |
-		                                 GTK_DIALOG_DESTROY_WITH_PARENT,
-		                                 GTK_MESSAGE_ERROR,
-		                                 GTK_BUTTONS_CLOSE,
-		                                 _("Sorry, this did not work"));
-		gtk_message_dialog_format_secondary_text (GTK_MESSAGE_DIALOG (dialog),
-		                                          "%s", msg);
-		g_signal_connect (dialog, "response",
-				  G_CALLBACK (gs_shell_details_failed_response_cb), self);
-		gs_shell_modal_dialog_present (self->shell, GTK_DIALOG (dialog));
-
 		g_warning ("failed to convert to GsApp: %s", error->message);
+		/* switch away from the details view that failed to load */
+		gs_shell_set_mode (self->shell, GS_SHELL_MODE_OVERVIEW);
 		return;
 	}
 
@@ -1440,7 +1502,11 @@ gs_shell_details_file_to_app_cb (GObject *source,
 	gs_shell_details_refresh_addons (self);
 	gs_shell_details_refresh_reviews (self);
 	gs_shell_details_refresh_all (self);
+	gs_shell_details_refresh_content_rating (self);
 	gs_shell_details_set_state (self, GS_SHELL_DETAILS_STATE_READY);
+
+	/* do 2nd stage refine */
+	gs_shell_details_app_refine2 (self);
 }
 
 void
@@ -1453,10 +1519,7 @@ gs_shell_details_set_filename (GsShellDetails *self, const gchar *filename)
 	gs_plugin_loader_file_to_app_async (self->plugin_loader,
 					    file,
 					    GS_PLUGIN_REFINE_FLAGS_REQUIRE_ICON |
-					    GS_PLUGIN_REFINE_FLAGS_REQUIRE_PERMISSIONS |
-					    GS_PLUGIN_REFINE_FLAGS_REQUIRE_RATING |
-					    GS_PLUGIN_REFINE_FLAGS_REQUIRE_REVIEW_RATINGS |
-					    GS_PLUGIN_REFINE_FLAGS_REQUIRE_REVIEWS,
+					    GS_PLUGIN_REFINE_FLAGS_REQUIRE_PERMISSIONS,
 					    self->cancellable,
 					    gs_shell_details_file_to_app_cb,
 					    self);
@@ -1470,7 +1533,6 @@ gs_shell_details_load (GsShellDetails *self)
 					   GS_PLUGIN_REFINE_FLAGS_REQUIRE_PERMISSIONS |
 					   GS_PLUGIN_REFINE_FLAGS_REQUIRE_LICENSE |
 					   GS_PLUGIN_REFINE_FLAGS_REQUIRE_SIZE |
-					   GS_PLUGIN_REFINE_FLAGS_REQUIRE_RATING |
 					   GS_PLUGIN_REFINE_FLAGS_REQUIRE_VERSION |
 					   GS_PLUGIN_REFINE_FLAGS_REQUIRE_HISTORY |
 					   GS_PLUGIN_REFINE_FLAGS_REQUIRE_SETUP_ACTION |
@@ -1479,9 +1541,7 @@ gs_shell_details_load (GsShellDetails *self)
 					   GS_PLUGIN_REFINE_FLAGS_REQUIRE_URL |
 					   GS_PLUGIN_REFINE_FLAGS_REQUIRE_SETUP_ACTION |
 					   GS_PLUGIN_REFINE_FLAGS_REQUIRE_PROVENANCE |
-					   GS_PLUGIN_REFINE_FLAGS_REQUIRE_ADDONS |
-					   GS_PLUGIN_REFINE_FLAGS_REQUIRE_REVIEW_RATINGS |
-					   GS_PLUGIN_REFINE_FLAGS_REQUIRE_REVIEWS,
+					   GS_PLUGIN_REFINE_FLAGS_REQUIRE_ADDONS,
 					   self->cancellable,
 					   gs_shell_details_app_refine_cb,
 					   self);
@@ -1595,6 +1655,12 @@ gs_shell_details_app_install_button_cb (GtkWidget *widget, GsShellDetails *self)
 	}
 
 	g_set_object (&self->cancellable, cancellable);
+
+	if (gs_app_get_state (self->app) == AS_APP_STATE_UPDATABLE_LIVE) {
+		gs_page_update_app (GS_PAGE (self), self->app, self->cancellable);
+		return;
+	}
+
 	gs_page_install_app (GS_PAGE (self), self->app, self->cancellable);
 }
 
@@ -1686,7 +1752,7 @@ gs_shell_details_review_response_cb (GtkDialog *dialog,
 	helper->self = g_object_ref (self);
 	helper->app = g_object_ref (self->app);
 	helper->review = g_object_ref (review);
-	helper->action = GS_PLUGIN_REVIEW_ACTION_SUBMIT;
+	helper->action = GS_PLUGIN_ACTION_REVIEW_SUBMIT;
 	gs_plugin_loader_review_action_async (self->plugin_loader,
 					      helper->app,
 					      helper->review,
@@ -1728,6 +1794,79 @@ gs_shell_details_more_reviews_button_cb (GtkWidget *widget, GsShellDetails *self
 	gtk_container_foreach (GTK_CONTAINER (self->list_box_reviews),
 			       (GtkCallback) gtk_widget_show, NULL);
 	gtk_widget_set_visible (self->button_more_reviews, FALSE);
+}
+
+static void
+gs_shell_details_content_rating_button_cb (GtkWidget *widget, GsShellDetails *self)
+{
+	AsContentRating *cr;
+	AsContentRatingValue value_bad = AS_CONTENT_RATING_VALUE_NONE;
+	const gchar *tmp;
+	guint i, j;
+	g_autoptr(GString) str = g_string_new (NULL);
+	struct {
+		const gchar *ids[5];	/* ordered inside from worst to best */
+	} id_map[] = {
+		{ "violence-bloodshed",
+		  "violence-realistic",
+		  "violence-fantasy",
+		  "violence-cartoon", NULL },
+		{ "violence-sexual", NULL },
+		{ "drugs-alcohol", NULL },
+		{ "drugs-narcotics", NULL },
+		{ "sex-nudity", NULL },
+		{ "sex-themes", NULL },
+		{ "language-profanity", NULL },
+		{ "language-humor", NULL },
+		{ "language-discrimination", NULL },
+		{ "money-advertising", NULL },
+		{ "money-gambling", NULL },
+		{ "money-purchasing", NULL },
+		{ "social-audio",
+		  "social-chat",
+		  "social-contacts",
+		  "social-info", NULL },
+		{ "social-location", NULL },
+		{ NULL }
+	};
+
+	/* get the worst thing */
+	cr = gs_app_get_content_rating (self->app);
+	if (cr == NULL)
+		return;
+	for (j = 0; id_map[j].ids[0] != NULL; j++) {
+		for (i = 0; id_map[j].ids[i] != NULL; i++) {
+			AsContentRatingValue value;
+			value = as_content_rating_get_value (cr, id_map[j].ids[i]);
+			if (value > value_bad)
+				value_bad = value;
+		}
+	}
+
+	/* get the content rating description for the worst things about the app */
+	for (j = 0; id_map[j].ids[0] != NULL; j++) {
+		for (i = 0; id_map[j].ids[i] != NULL; i++) {
+			AsContentRatingValue value;
+			value = as_content_rating_get_value (cr, id_map[j].ids[i]);
+			if (value < value_bad)
+				continue;
+			tmp = gs_content_rating_key_value_to_str (id_map[j].ids[i], value);
+			g_string_append_printf (str, "• %s\n", tmp);
+			break;
+		}
+	}
+	if (str->len > 0)
+		g_string_truncate (str, str->len - 1);
+
+	/* enable the details if there are any */
+	gtk_label_set_label (GTK_LABEL (self->label_content_rating_message), str->str);
+	gtk_widget_set_visible (self->label_content_rating_title, str->len > 0);
+	gtk_widget_set_visible (self->label_content_rating_message, str->len > 0);
+	gtk_widget_set_visible (self->label_content_rating_none, str->len == 0);
+
+	/* show popover */
+	gtk_popover_set_relative_to (GTK_POPOVER (self->popover_content_rating), widget);
+	gtk_widget_show (self->popover_content_rating);
 }
 
 static gboolean
@@ -1847,7 +1986,8 @@ static void
 gs_shell_details_license_nonfree_cb (GtkWidget *widget, GsShellDetails *self)
 {
 	g_autofree gchar *str = NULL;
-	const gchar *uri = "https://en.wikipedia.org/wiki/Proprietary_software";
+	g_autofree gchar *uri = NULL;
+	uri = g_settings_get_string (self->settings, "nonfree-software-uri");
 	str = g_strdup_printf ("<a href=\"%s\">%s</a>",
 			       uri,
 			       _("More information"));
@@ -1898,6 +2038,9 @@ gs_shell_details_setup (GsShellDetails *self,
 			  self);
 	g_signal_connect (self->button_more_reviews, "clicked",
 			  G_CALLBACK (gs_shell_details_more_reviews_button_cb),
+			  self);
+	g_signal_connect (self->button_details_rating_value, "clicked",
+			  G_CALLBACK (gs_shell_details_content_rating_button_cb),
 			  self);
 	g_signal_connect (self->label_details_updated_value, "activate-link",
 			  G_CALLBACK (gs_shell_details_history_cb),
@@ -2042,6 +2185,12 @@ gs_shell_details_class_init (GsShellDetailsClass *klass)
 	gtk_widget_class_bind_template_child (widget_class, GsShellDetails, popover_license_unknown);
 	gtk_widget_class_bind_template_child (widget_class, GsShellDetails, label_license_nonfree_details);
 	gtk_widget_class_bind_template_child (widget_class, GsShellDetails, label_licenses_intro);
+	gtk_widget_class_bind_template_child (widget_class, GsShellDetails, popover_content_rating);
+	gtk_widget_class_bind_template_child (widget_class, GsShellDetails, label_content_rating_title);
+	gtk_widget_class_bind_template_child (widget_class, GsShellDetails, label_content_rating_message);
+	gtk_widget_class_bind_template_child (widget_class, GsShellDetails, label_content_rating_none);
+	gtk_widget_class_bind_template_child (widget_class, GsShellDetails, button_details_rating_value);
+	gtk_widget_class_bind_template_child (widget_class, GsShellDetails, label_details_rating_title);
 }
 
 static void

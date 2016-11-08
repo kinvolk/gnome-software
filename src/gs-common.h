@@ -36,10 +36,6 @@ void	 gs_container_remove_all	(GtkContainer	*container);
 void	 gs_grab_focus_when_mapped	(GtkWidget	*widget);
 
 void	 gs_app_notify_installed	(GsApp		*app);
-void	 gs_app_notify_failed_modal	(GsApp		*app,
-					 GtkWindow	*parent_window,
-					 GsPluginLoaderAction action,
-					 const GError	*error);
 GtkResponseType
 	gs_app_notify_unavailable	(GsApp		*app,
 					 GtkWindow	*parent);
@@ -52,8 +48,6 @@ void	gs_image_set_from_pixbuf_with_scale	(GtkImage		*image,
 void	gs_image_set_from_pixbuf		(GtkImage		*image,
 						 const GdkPixbuf	*pixbuf);
 
-const gchar 	*gs_utils_get_content_rating	(void);
-
 const gchar	*gs_user_agent			(void);
 gboolean	 gs_utils_is_current_desktop	(const gchar	*name);
 void		 gs_utils_widget_set_css_app	(GsApp		*app,
@@ -61,13 +55,15 @@ void		 gs_utils_widget_set_css_app	(GsApp		*app,
 						 const gchar	*metadata_css);
 void		 gs_utils_widget_set_css_simple	(GtkWidget	*widget,
 						 const gchar	*css);
-gboolean	 gs_utils_strv_fnmatch		(gchar		**strv,
-						 const gchar	*str);
 const gchar	*gs_utils_get_error_value	(const GError	*error);
 void		 gs_utils_show_error_dialog	(GtkWindow	*parent,
 						 const gchar	*title,
 						 const gchar	*msg,
 						 const gchar	*details);
+gchar		*gs_utils_build_unique_id_kind	(AsAppKind	 kind,
+						 const gchar	*id);
+gboolean	 gs_utils_list_has_app_fuzzy	(GsAppList	*list,
+						 GsApp		*app);
 GtkWidget	*gs_search_button_new		(GtkSearchBar	*search_bar);
 
 G_END_DECLS

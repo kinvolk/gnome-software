@@ -297,8 +297,10 @@ gs_plugin_app_from_pki (LiPkgInfo *pki)
 		gs_app_set_kind (app, AS_APP_KIND_GENERIC);
 	}
 
+	/* TODO: scope?, branch? */
 	gs_app_set_management_plugin (app, "limba");
 	gs_app_set_state (app, AS_APP_STATE_UPDATABLE_LIVE);
+	gs_app_set_bundle_kind (app, AS_BUNDLE_KIND_LIMBA);
 	gs_app_set_name (app,
 			 GS_APP_QUALITY_LOWEST,
 			 li_pkg_info_get_name (pki));

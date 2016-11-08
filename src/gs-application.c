@@ -35,6 +35,8 @@
 #include <gtk/gtkx.h>
 #endif
 
+#include "gd-notification.h"
+
 #ifdef HAVE_PACKAGEKIT
 #include "gs-dbus-helper.h"
 #endif
@@ -50,7 +52,7 @@
 
 struct _GsApplication {
 	GtkApplication	 parent;
-	AsProfile	*profile;
+	gboolean	 enable_profile_mode;
 	GCancellable	*cancellable;
 	GtkApplication	*application;
 	GtkCssProvider	*provider;
@@ -119,55 +121,7 @@ gs_application_init (GsApplication *application)
 
 	g_application_add_main_option_entries (G_APPLICATION (application), options);
 
-	application->profile = as_profile_new ();
 	application->network_changed_handler = 0;
-}
-
-static void
-download_updates_setting_changed (GSettings     *settings,
-				  const gchar   *key,
-				  GsApplication *app)
-{
-	if (!gs_update_monitor_is_managed () &&
-	    g_settings_get_boolean (settings, key)) {
-		g_debug ("Enabling update monitor");
-		app->update_monitor = gs_update_monitor_new (app);
-	} else {
-		g_debug ("Disabling update monitor");
-		g_clear_object (&app->update_monitor);
-	}
-}
-
-static void
-on_permission_changed (GPermission *permission,
-                       GParamSpec  *pspec,
-                       gpointer     data)
-{
-	GsApplication *app = data;
-
-	if (app->settings)
-		download_updates_setting_changed (app->settings, "download-updates", app);
-}
-
-static void
-gs_application_monitor_permission (GsApplication *app)
-{
-	GPermission *permission;
-
-	permission = gs_update_monitor_permission_get ();
-	if (permission != NULL)
-		g_signal_connect (permission, "notify",
-				  G_CALLBACK (on_permission_changed), app);
-}
-
-static void
-gs_application_monitor_updates (GsApplication *app)
-{
-	g_signal_connect (app->settings, "changed::download-updates",
-			  G_CALLBACK (download_updates_setting_changed), app);
-	download_updates_setting_changed (app->settings,
-					  "download-updates",
-					  app);
 }
 
 static void
@@ -301,6 +255,9 @@ gs_application_initialize_ui (GsApplication *app)
 
 	initialized = TRUE;
 
+	/* register ahead of loading the .ui file */
+	gd_notification_get_type ();
+
 	/* get CSS */
 	app->provider = gtk_css_provider_new ();
 	gtk_style_context_add_provider_for_screen (gdk_screen_get_default (),
@@ -315,6 +272,9 @@ gs_application_initialize_ui (GsApplication *app)
 
 	/* setup UI */
 	app->shell = gs_shell_new ();
+
+	/* this lets gs_shell_profile_dump() work from shells */
+	gs_shell_set_profile_mode (app->shell, app->enable_profile_mode);
 
 	app->cancellable = g_cancellable_new ();
 
@@ -394,7 +354,13 @@ profile_activated (GSimpleAction *action,
 		   gpointer       data)
 {
 	GsApplication *app = GS_APPLICATION (data);
-	as_profile_dump (app->profile);
+	app->enable_profile_mode = TRUE;
+
+	/* dump right now as well */
+	if (app->plugin_loader != NULL) {
+		AsProfile *profile = gs_plugin_loader_get_profile (app->plugin_loader);
+		as_profile_dump (profile);
+	}
 }
 
 static void
@@ -428,7 +394,7 @@ reboot_failed_cb (GObject *source, GAsyncResult *res, gpointer user_data)
 	/* cancel trigger */
 	gs_plugin_loader_app_action_async (app->plugin_loader,
 					   NULL, /* everything! */
-					   GS_PLUGIN_LOADER_ACTION_UPDATE_CANCEL,
+					   GS_PLUGIN_ACTION_UPDATE_CANCEL,
 					   app->cancellable,
 					   cancel_trigger_failed_cb,
 					   app);
@@ -590,7 +556,12 @@ details_activated (GSimpleAction *action,
 		gs_shell_show_search_result (app->shell, id, search);
 	else {
 		g_autoptr (GsApp) a = NULL;
-		a = gs_app_new (id);
+
+		if (as_utils_unique_id_valid (id))
+			a = gs_app_new_from_unique_id (id);
+		else
+			a = gs_app_new (id);
+
 		gs_shell_show_app (app->shell, a);
 	}
 }
@@ -619,6 +590,7 @@ filename_activated (GSimpleAction *action,
 	const gchar *filename;
 
 	gs_application_initialize_ui (app);
+	gs_application_monitor_network (GS_APPLICATION (app));
 
 	g_variant_get (parameter, "(&s)", &filename);
 	gs_shell_show_filename (app->shell, filename);
@@ -752,8 +724,8 @@ gs_application_startup (GApplication *application)
 				  G_CALLBACK (gs_application_settings_changed_cb),
 				  application);
 
-	gs_application_monitor_permission (GS_APPLICATION (application));
-	gs_application_monitor_updates (GS_APPLICATION (application));
+	GS_APPLICATION (application)->update_monitor =
+		gs_update_monitor_new (GS_APPLICATION (application));
 	gs_folders_convert ();
 
 	gs_application_update_software_sources_presence (application);
@@ -802,7 +774,6 @@ gs_application_dispose (GObject *object)
 	g_clear_object (&app->shell);
 	g_clear_object (&app->provider);
 	g_clear_object (&app->update_monitor);
-	g_clear_object (&app->profile);
 	if (app->network_changed_handler != 0) {
 		g_signal_handler_disconnect (app->network_monitor, app->network_changed_handler);
 		app->network_changed_handler = 0;
@@ -824,6 +795,7 @@ gs_application_handle_local_options (GApplication *app, GVariantDict *options)
 	const gchar *local_filename;
 	const gchar *mode;
 	const gchar *search;
+	gint rc = -1;
 	g_autoptr(GError) error = NULL;
 
 	if (g_variant_dict_contains (options, "verbose"))
@@ -847,7 +819,6 @@ gs_application_handle_local_options (GApplication *app, GVariantDict *options)
 		g_action_group_activate_action (G_ACTION_GROUP (app),
 						"profile",
 						NULL);
-		return 0;
 	}
 	if (g_variant_dict_contains (options, "quit")) {
 		g_action_group_activate_action (G_ACTION_GROUP (app),
@@ -860,30 +831,30 @@ gs_application_handle_local_options (GApplication *app, GVariantDict *options)
 		g_action_group_activate_action (G_ACTION_GROUP (app),
 						"set-mode",
 						g_variant_new_string (mode));
-		return 0;
+		rc = 0;
 	} else if (g_variant_dict_lookup (options, "search", "&s", &search)) {
 		g_action_group_activate_action (G_ACTION_GROUP (app),
 						"search",
 						g_variant_new_string (search));
-		return 0;
+		rc = 0;
 	} else if (g_variant_dict_lookup (options, "details", "&s", &id)) {
 		g_action_group_activate_action (G_ACTION_GROUP (app),
 						"details",
 						g_variant_new ("(ss)", id, ""));
-		return 0;
+		rc = 0;
 	} else if (g_variant_dict_lookup (options, "details-pkg", "&s", &pkgname)) {
 		g_action_group_activate_action (G_ACTION_GROUP (app),
 						"details-pkg",
 						g_variant_new_string (pkgname));
-		return 0;
+		rc = 0;
 	} else if (g_variant_dict_lookup (options, "local-filename", "^&ay", &local_filename)) {
 		g_action_group_activate_action (G_ACTION_GROUP (app),
 						"filename",
 						g_variant_new ("(s)", local_filename));
-		return 0;
+		rc = 0;
 	}
 
-	return -1;
+	return rc;
 }
 
 static void

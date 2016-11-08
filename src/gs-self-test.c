@@ -29,7 +29,7 @@
 #include "gs-app-private.h"
 #include "gs-app-list-private.h"
 #include "gs-os-release.h"
-#include "gs-plugin.h"
+#include "gs-plugin-private.h"
 #include "gs-plugin-loader.h"
 #include "gs-plugin-loader-sync.h"
 #include "gs-utils.h"
@@ -89,12 +89,75 @@ gs_os_release_func (void)
 }
 
 static void
+gs_utils_error_func (void)
+{
+	guint i;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GsApp) app = gs_app_new ("gimp.desktop");
+
+	for (i = 0; i < GS_PLUGIN_ERROR_LAST; i++)
+		g_assert (gs_plugin_error_to_string (i) != NULL);
+
+	gs_utils_error_add_unique_id (&error, app);
+	g_set_error (&error,
+		     GS_PLUGIN_ERROR,
+		     GS_PLUGIN_ERROR_DOWNLOAD_FAILED,
+		     "failed");
+	g_assert_cmpstr (error->message, ==, "failed");
+	gs_utils_error_add_unique_id (&error, app);
+	g_assert_cmpstr (error->message, ==, "[*/*/*/*/gimp.desktop/*] failed");
+	gs_utils_error_strip_unique_id (error);
+	g_assert_cmpstr (error->message, ==, "failed");
+}
+
+static void
+gs_plugin_global_cache_func (void)
+{
+	const gchar *unique_id;
+	g_autoptr(GsPlugin) plugin1 = NULL;
+	g_autoptr(GsPlugin) plugin2 = NULL;
+	g_autoptr(GsAppList) list = gs_app_list_new ();
+	g_autoptr(GsApp) app = gs_app_new ("gimp.desktop");
+	g_autoptr(GsApp) app1 = NULL;
+	g_autoptr(GsApp) app2 = NULL;
+
+	plugin1 = gs_plugin_new ();
+	gs_plugin_set_global_cache (plugin1, list);
+
+	plugin2 = gs_plugin_new ();
+	gs_plugin_set_global_cache (plugin2, list);
+
+	/* both plugins not opted into the global cache */
+	unique_id = gs_app_get_unique_id (app);
+	gs_plugin_cache_add (plugin1, unique_id, app);
+	g_assert (gs_plugin_cache_lookup (plugin2, unique_id) == NULL);
+	app1 = gs_plugin_cache_lookup (plugin1, unique_id);
+	g_assert (app1 != NULL);
+
+	/* one plugin opted in */
+	gs_plugin_add_flags (plugin1, GS_PLUGIN_FLAGS_GLOBAL_CACHE);
+	gs_plugin_cache_add (plugin1, unique_id, app);
+	g_assert (gs_plugin_cache_lookup (plugin2, unique_id) == NULL);
+
+	/* both plugins opted in */
+	gs_plugin_add_flags (plugin2, GS_PLUGIN_FLAGS_GLOBAL_CACHE);
+	gs_plugin_cache_add (plugin1, unique_id, app);
+	app2 = gs_plugin_cache_lookup (plugin2, unique_id);
+	g_assert (app2 != NULL);
+}
+
+static void
 gs_plugin_func (void)
 {
 	GsAppList *list;
 	GsAppList *list_dup;
 	GsAppList *list_remove;
 	GsApp *app;
+	guint i;
+
+	/* check enums converted */
+	for (i = 0; i < GS_PLUGIN_ACTION_LAST; i++)
+		g_assert (gs_plugin_action_to_string (i) != NULL);
 
 	/* add a couple of duplicate IDs */
 	app = gs_app_new ("a");
@@ -154,23 +217,108 @@ gs_plugin_func (void)
 
 	/* respect priority when deduplicating */
 	list = gs_app_list_new ();
-	app = gs_app_new ("foo:e");
+	app = gs_app_new ("e");
+	gs_app_set_unique_id (app, "user/foo/*/*/e/*");
 	gs_app_list_add (list, app);
 	gs_app_set_priority (app, 0);
 	g_object_unref (app);
-	app = gs_app_new ("bar:e");
+	app = gs_app_new ("e");
+	gs_app_set_unique_id (app, "user/bar/*/*/e/*");
 	gs_app_list_add (list, app);
 	gs_app_set_priority (app, 99);
 	g_object_unref (app);
-	app = gs_app_new ("baz:e");
+	app = gs_app_new ("e");
+	gs_app_set_unique_id (app, "user/baz/*/*/e/*");
 	gs_app_list_add (list, app);
 	gs_app_set_priority (app, 50);
 	g_object_unref (app);
 	g_assert_cmpint (gs_app_list_length (list), ==, 3);
 	gs_app_list_filter_duplicates (list, GS_APP_LIST_FILTER_FLAG_PRIORITY);
 	g_assert_cmpint (gs_app_list_length (list), ==, 1);
-	g_assert_cmpstr (gs_app_get_id (gs_app_list_index (list, 0)), ==, "bar:e");
+	g_assert_cmpstr (gs_app_get_unique_id (gs_app_list_index (list, 0)), ==, "user/bar/*/*/e/*");
 	g_object_unref (list);
+
+	/* use globs when adding */
+	list = gs_app_list_new ();
+	app = gs_app_new ("b");
+	gs_app_set_unique_id (app, "a/b/c/d/e/f");
+	gs_app_list_add (list, app);
+	g_object_unref (app);
+	app = gs_app_new ("b");
+	gs_app_set_unique_id (app, "a/b/c/*/e/f");
+	gs_app_list_add (list, app);
+	g_object_unref (app);
+	g_assert_cmpint (gs_app_list_length (list), ==, 1);
+	g_assert_cmpstr (gs_app_get_id (gs_app_list_index (list, 0)), ==, "b");
+	g_object_unref (list);
+
+	/* lookup with a wildcard */
+	list = gs_app_list_new ();
+	app = gs_app_new ("b");
+	gs_app_set_unique_id (app, "a/b/c/d/e/f");
+	gs_app_list_add (list, app);
+	g_object_unref (app);
+	g_assert (gs_app_list_lookup (list, "a/b/c/d/e/f") != NULL);
+	g_assert (gs_app_list_lookup (list, "a/b/c/d/e/*") != NULL);
+	g_assert (gs_app_list_lookup (list, "*/b/c/d/e/f") != NULL);
+	g_assert (gs_app_list_lookup (list, "x/x/x/x/x/x") == NULL);
+	g_object_unref (list);
+
+	/* allow duplicating a wildcard */
+	list = gs_app_list_new ();
+	app = gs_app_new ("gimp.desktop");
+	gs_app_add_quirk (app, AS_APP_QUIRK_MATCH_ANY_PREFIX);
+	gs_app_list_add (list, app);
+	g_object_unref (app);
+	app = gs_app_new ("gimp.desktop");
+	gs_app_set_unique_id (app, "system/flatpak/*/*/gimp.desktop/stable");
+	gs_app_list_add (list, app);
+	g_object_unref (app);
+	g_assert_cmpint (gs_app_list_length (list), ==, 2);
+	g_object_unref (list);
+
+	/* add a list to a list */
+	list = gs_app_list_new ();
+	list_dup = gs_app_list_new ();
+	app = gs_app_new ("a");
+	gs_app_list_add (list, app);
+	g_object_unref (app);
+	app = gs_app_new ("b");
+	gs_app_list_add (list_dup, app);
+	g_object_unref (app);
+	gs_app_list_add_list (list, list_dup);
+	g_assert_cmpint (gs_app_list_length (list), ==, 2);
+	g_assert_cmpint (gs_app_list_length (list_dup), ==, 1);
+	g_object_unref (list);
+	g_object_unref (list_dup);
+
+	/* remove apps from the list */
+	list = gs_app_list_new ();
+	app = gs_app_new ("a");
+	gs_app_list_add (list, app);
+	g_object_unref (app);
+	app = gs_app_new ("a");
+	gs_app_list_remove (list, app);
+	g_object_unref (app);
+	g_assert_cmpint (gs_app_list_length (list), ==, 0);
+	g_object_unref (list);
+}
+
+static void
+gs_app_unique_id_func (void)
+{
+	g_autoptr(GsApp) app = NULL;
+	const gchar *unique_id;
+
+	unique_id = "system/flatpak/gnome/desktop/org.gnome.Software.desktop/master";
+	app = gs_app_new_from_unique_id (unique_id);
+	g_assert (GS_IS_APP (app));
+	g_assert_cmpint (gs_app_get_scope (app), ==, AS_APP_SCOPE_SYSTEM);
+	g_assert_cmpint (gs_app_get_bundle_kind (app), ==, AS_BUNDLE_KIND_FLATPAK);
+	g_assert_cmpstr (gs_app_get_origin (app), ==, "gnome");
+	g_assert_cmpint (gs_app_get_kind (app), ==, AS_APP_KIND_DESKTOP);
+	g_assert_cmpstr (gs_app_get_id (app), ==, "org.gnome.Software.desktop");
+	g_assert_cmpstr (gs_app_get_branch (app), ==, "master");
 }
 
 static void
@@ -178,11 +326,9 @@ gs_app_func (void)
 {
 	g_autoptr(GsApp) app = NULL;
 
-	app = gs_app_new ("flatpak:gnome-software");
+	app = gs_app_new ("gnome-software.desktop");
 	g_assert (GS_IS_APP (app));
-
-	g_assert_cmpstr (gs_app_get_id (app), ==, "flatpak:gnome-software");
-	g_assert_cmpstr (gs_app_get_id_no_prefix (app), ==, "gnome-software");
+	g_assert_cmpstr (gs_app_get_id (app), ==, "gnome-software.desktop");
 
 	/* check we clean up the version, but not at the expense of having
 	 * the same string as the update version */
@@ -243,7 +389,7 @@ gs_plugin_loader_install_func (GsPluginLoader *plugin_loader)
 	gs_app_set_management_plugin (app, "dummy");
 	gs_app_set_state (app, AS_APP_STATE_AVAILABLE);
 	ret = gs_plugin_loader_app_action (plugin_loader, app,
-					   GS_PLUGIN_LOADER_ACTION_INSTALL,
+					   GS_PLUGIN_ACTION_INSTALL,
 					   NULL,
 					   &error);
 	g_assert_no_error (error);
@@ -253,7 +399,7 @@ gs_plugin_loader_install_func (GsPluginLoader *plugin_loader)
 	/* remove -- we're really testing for return code UNKNOWN,
 	 * but dummy::refine() sets it */
 	ret = gs_plugin_loader_app_action (plugin_loader, app,
-					   GS_PLUGIN_LOADER_ACTION_REMOVE,
+					   GS_PLUGIN_ACTION_REMOVE,
 					   NULL,
 					   &error);
 	g_assert_no_error (error);
@@ -264,10 +410,15 @@ gs_plugin_loader_install_func (GsPluginLoader *plugin_loader)
 static void
 gs_plugin_loader_error_func (GsPluginLoader *plugin_loader)
 {
+	GsPluginEvent *event;
+	const GError *app_error;
 	gboolean ret;
-	g_autoptr(GsApp) app = NULL;
 	g_autoptr(GError) error = NULL;
-	GError *last_error;
+	g_autoptr(GPtrArray) events = NULL;
+	g_autoptr(GsApp) app = NULL;
+
+	/* remove previous errors */
+	gs_plugin_loader_remove_events (plugin_loader);
 
 	/* suppress this */
 	g_test_expect_message (G_LOG_DOMAIN, G_LOG_LEVEL_WARNING,
@@ -278,7 +429,7 @@ gs_plugin_loader_error_func (GsPluginLoader *plugin_loader)
 	gs_app_set_management_plugin (app, "dummy");
 	gs_app_set_state (app, AS_APP_STATE_AVAILABLE);
 	ret = gs_plugin_loader_app_action (plugin_loader, app,
-					   GS_PLUGIN_LOADER_ACTION_UPDATE,
+					   GS_PLUGIN_ACTION_UPDATE,
 					   NULL,
 					   &error);
 	g_assert_no_error (error);
@@ -287,9 +438,27 @@ gs_plugin_loader_error_func (GsPluginLoader *plugin_loader)
 	/* ensure we failed the plugin action */
 	g_test_assert_expected_messages ();
 
-	/* retrieve the error from the application */
-	last_error = gs_app_get_last_error (app);
-	g_assert_error (last_error, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_NO_NETWORK);
+	/* get event by app-id */
+	event = gs_plugin_loader_get_event_by_id (plugin_loader,
+						  "*/*/*/source/dummy/*");
+	g_assert (event != NULL);
+	g_assert (gs_plugin_event_get_app (event) == app);
+
+	/* get last active event */
+	event = gs_plugin_loader_get_event_default (plugin_loader);
+	g_assert (event != NULL);
+	g_assert (gs_plugin_event_get_app (event) == app);
+
+	/* check all the events */
+	events = gs_plugin_loader_get_events (plugin_loader);
+	g_assert_cmpint (events->len, ==, 1);
+	event = g_ptr_array_index (events, 0);
+	g_assert (gs_plugin_event_get_app (event) == app);
+	app_error = gs_plugin_event_get_error (event);
+	g_assert (app_error != NULL);
+	g_assert_error (app_error,
+			GS_PLUGIN_ERROR,
+			GS_PLUGIN_ERROR_DOWNLOAD_FAILED);
 }
 
 static void
@@ -413,7 +582,7 @@ gs_plugin_loader_distro_upgrades_func (GsPluginLoader *plugin_loader)
 	/* download the update */
 	ret = gs_plugin_loader_app_action (plugin_loader,
 					   app,
-					   GS_PLUGIN_LOADER_ACTION_UPGRADE_DOWNLOAD,
+					   GS_PLUGIN_ACTION_UPGRADE_DOWNLOAD,
 					   NULL,
 					   &error);
 	g_assert_no_error (error);
@@ -423,7 +592,7 @@ gs_plugin_loader_distro_upgrades_func (GsPluginLoader *plugin_loader)
 	/* trigger the update */
 	ret = gs_plugin_loader_app_action (plugin_loader,
 					   app,
-					   GS_PLUGIN_LOADER_ACTION_UPGRADE_TRIGGER,
+					   GS_PLUGIN_ACTION_UPGRADE_TRIGGER,
 					   NULL,
 					   &error);
 	g_assert_no_error (error);
@@ -518,6 +687,32 @@ gs_plugin_loader_search_func (GsPluginLoader *plugin_loader)
 	app = gs_app_list_index (list, 0);
 	g_assert_cmpstr (gs_app_get_id (app), ==, "zeus.desktop");
 	g_assert_cmpint (gs_app_get_kind (app), ==, AS_APP_KIND_DESKTOP);
+}
+
+static void
+gs_plugin_loader_modalias_func (GsPluginLoader *plugin_loader)
+{
+	GsApp *app;
+	g_autofree gchar *menu_path = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GsAppList) list = NULL;
+
+	/* get search result based on addon keyword */
+	list = gs_plugin_loader_search (plugin_loader,
+					"colorhug2",
+					GS_PLUGIN_REFINE_FLAGS_REQUIRE_ICON,
+					NULL,
+					&error);
+	g_assert_no_error (error);
+	g_assert (list != NULL);
+
+	/* make sure there is one entry, the parent app */
+	g_assert_cmpint (gs_app_list_length (list), ==, 1);
+	app = gs_app_list_index (list, 0);
+	g_assert_cmpstr (gs_app_get_id (app), ==, "com.hughski.ColorHug2.driver");
+	g_assert_cmpint (gs_app_get_kind (app), ==, AS_APP_KIND_DRIVER);
+	g_assert (gs_app_has_category (app, "Addons"));
+	g_assert (gs_app_has_category (app, "Drivers"));
 }
 
 static void
@@ -720,7 +915,7 @@ gs_plugin_loader_flatpak_repo_func (GsPluginLoader *plugin_loader)
 
 	/* now install the remote */
 	ret = gs_plugin_loader_app_action (plugin_loader, app,
-					   GS_PLUGIN_LOADER_ACTION_INSTALL,
+					   GS_PLUGIN_ACTION_INSTALL,
 					   NULL,
 					   &error);
 	g_assert_no_error (error);
@@ -742,7 +937,7 @@ gs_plugin_loader_flatpak_repo_func (GsPluginLoader *plugin_loader)
 	/* check the URL was unmangled */
 	remote_url = g_key_file_get_string (kf, group_name, "url", &error);
 	g_assert_no_error (error);
-	g_assert_cmpstr (remote_url, ==, "http://foo.bar");
+	g_assert_cmpstr (remote_url, ==, "http://foo.bar/apps");
 
 	/* try again, check state is correct */
 	app2 = gs_plugin_loader_file_to_app (plugin_loader,
@@ -756,7 +951,7 @@ gs_plugin_loader_flatpak_repo_func (GsPluginLoader *plugin_loader)
 
 	/* remove it */
 	ret = gs_plugin_loader_app_action (plugin_loader, app,
-					   GS_PLUGIN_LOADER_ACTION_REMOVE,
+					   GS_PLUGIN_ACTION_REMOVE,
 					   NULL,
 					   &error);
 	g_assert_no_error (error);
@@ -776,6 +971,7 @@ gs_plugin_loader_flatpak_func (GsPluginLoader *plugin_loader)
 	g_autofree gchar *desktop_fn = NULL;
 	g_autofree gchar *kf_remote_url = NULL;
 	g_autofree gchar *metadata_fn = NULL;
+	g_autofree gchar *repodir_fn = NULL;
 	g_autofree gchar *runtime_fn = NULL;
 	g_autofree gchar *testdir = NULL;
 	g_autofree gchar *testdir_repourl = NULL;
@@ -789,6 +985,14 @@ gs_plugin_loader_flatpak_func (GsPluginLoader *plugin_loader)
 	/* no flatpak, abort */
 	if (!gs_plugin_loader_get_enabled (plugin_loader, "flatpak-user"))
 		return;
+
+	/* no files to use */
+	repodir_fn = gs_test_get_filename ("tests/flatpak/repo");
+	if (repodir_fn == NULL ||
+	    !g_file_test (repodir_fn, G_FILE_TEST_EXISTS)) {
+		g_test_skip ("no flatpak test repo");
+		return;
+	}
 
 	/* check changed file exists */
 	root = g_getenv ("GS_SELF_TEST_FLATPACK_DATADIR");
@@ -815,7 +1019,7 @@ gs_plugin_loader_flatpak_func (GsPluginLoader *plugin_loader)
 	gs_app_set_state (app_source, AS_APP_STATE_AVAILABLE);
 	gs_app_set_url (app_source, AS_URL_KIND_HOMEPAGE, testdir_repourl);
 	ret = gs_plugin_loader_app_action (plugin_loader, app_source,
-					   GS_PLUGIN_LOADER_ACTION_INSTALL,
+					   GS_PLUGIN_ACTION_INSTALL,
 					   NULL,
 					   &error);
 	g_assert_no_error (error);
@@ -876,7 +1080,7 @@ gs_plugin_loader_flatpak_func (GsPluginLoader *plugin_loader)
 
 	/* install, also installing runtime */
 	ret = gs_plugin_loader_app_action (plugin_loader, app,
-					   GS_PLUGIN_LOADER_ACTION_INSTALL,
+					   GS_PLUGIN_ACTION_INSTALL,
 					   NULL,
 					   &error);
 	g_assert_no_error (error);
@@ -923,7 +1127,7 @@ gs_plugin_loader_flatpak_func (GsPluginLoader *plugin_loader)
 
 	/* remove the application */
 	ret = gs_plugin_loader_app_action (plugin_loader, app,
-					   GS_PLUGIN_LOADER_ACTION_REMOVE,
+					   GS_PLUGIN_ACTION_REMOVE,
 					   NULL,
 					   &error);
 	g_assert_no_error (error);
@@ -983,7 +1187,7 @@ gs_plugin_loader_authentication_func (GsPluginLoader *plugin_loader)
 
 	/* do an action that returns a URL */
 	ret = gs_plugin_loader_auth_action (plugin_loader, auth,
-					    GS_AUTH_ACTION_REGISTER,
+					    GS_PLUGIN_ACTION_AUTH_REGISTER,
 					    NULL, &error);
 	g_assert_error (error, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_AUTH_INVALID);
 	g_assert (!ret);
@@ -994,7 +1198,7 @@ gs_plugin_loader_authentication_func (GsPluginLoader *plugin_loader)
 	app = gs_app_new (NULL);
 	review = as_review_new ();
 	ret = gs_plugin_loader_review_action (plugin_loader, app, review,
-					      GS_PLUGIN_REVIEW_ACTION_REMOVE,
+					      GS_PLUGIN_ACTION_REVIEW_REMOVE,
 					      NULL, &error);
 	g_assert_error (error, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_AUTH_REQUIRED);
 	g_assert (!ret);
@@ -1002,7 +1206,7 @@ gs_plugin_loader_authentication_func (GsPluginLoader *plugin_loader)
 
 	/* pretend to auth with no credentials */
 	ret = gs_plugin_loader_auth_action (plugin_loader, auth,
-					    GS_AUTH_ACTION_LOGIN,
+					    GS_PLUGIN_ACTION_AUTH_LOGIN,
 					    NULL, &error);
 	g_assert_error (error, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_AUTH_INVALID);
 	g_assert (!ret);
@@ -1013,7 +1217,7 @@ gs_plugin_loader_authentication_func (GsPluginLoader *plugin_loader)
 	gs_auth_set_username (auth, "dummy");
 	gs_auth_set_password (auth, "dummy");
 	ret = gs_plugin_loader_auth_action (plugin_loader, auth,
-					    GS_AUTH_ACTION_LOGIN,
+					    GS_PLUGIN_ACTION_AUTH_LOGIN,
 					    NULL, &error);
 	g_assert_no_error (error);
 	g_assert (ret);
@@ -1022,7 +1226,7 @@ gs_plugin_loader_authentication_func (GsPluginLoader *plugin_loader)
 	/* do the action that requires a login */
 	review2 = as_review_new ();
 	ret = gs_plugin_loader_review_action (plugin_loader, app, review2,
-					      GS_PLUGIN_REVIEW_ACTION_REMOVE,
+					      GS_PLUGIN_ACTION_REVIEW_REMOVE,
 					      NULL, &error);
 	g_assert_no_error (error);
 	g_assert (ret);
@@ -1104,6 +1308,7 @@ main (int argc, char **argv)
 		"desktop-menu-path",
 		"icons",
 		"key-colors",
+		"modalias",
 		"provenance",
 		"provenance-license",
 		"packagekit-local",
@@ -1139,6 +1344,14 @@ main (int argc, char **argv)
 	g_assert (fn != NULL);
 	xml = g_strdup_printf ("<?xml version=\"1.0\"?>\n"
 		"<components version=\"0.9\">\n"
+		"  <component type=\"driver\">\n"
+		"    <id>com.hughski.ColorHug2.driver</id>\n"
+		"    <name>ColorHug2</name>\n"
+		"    <summary>ColorHug2 Colorimeter Driver</summary>\n"
+		"    <provides>\n"
+		"      <modalias>pci:*</modalias>\n"
+		"    </provides>\n"
+		"  </component>\n"
 		"  <component type=\"desktop\">\n"
 		"    <id>chiron.desktop</id>\n"
 		"    <pkgname>chiron</pkgname>\n"
@@ -1214,9 +1427,12 @@ main (int argc, char **argv)
 
 	/* generic tests go here */
 	g_test_add_func ("/gnome-software/utils{wilson}", gs_utils_wilson_func);
+	g_test_add_func ("/gnome-software/utils{error}", gs_utils_error_func);
 	g_test_add_func ("/gnome-software/os-release", gs_os_release_func);
 	g_test_add_func ("/gnome-software/app", gs_app_func);
+	g_test_add_func ("/gnome-software/app{unique-id}", gs_app_unique_id_func);
 	g_test_add_func ("/gnome-software/plugin", gs_plugin_func);
+	g_test_add_func ("/gnome-software/plugin{global-cache}", gs_plugin_global_cache_func);
 	g_test_add_func ("/gnome-software/auth{secret}", gs_auth_secret_func);
 
 	/* we can only load this once per process */
@@ -1264,6 +1480,9 @@ main (int argc, char **argv)
 	g_test_add_data_func ("/gnome-software/plugin-loader{webapps}",
 			      plugin_loader,
 			      (GTestDataFunc) gs_plugin_loader_webapps_func);
+	g_test_add_data_func ("/gnome-software/plugin-loader{modalias}",
+			      plugin_loader,
+			      (GTestDataFunc) gs_plugin_loader_modalias_func);
 	g_test_add_data_func ("/gnome-software/plugin-loader{search}",
 			      plugin_loader,
 			      (GTestDataFunc) gs_plugin_loader_search_func);

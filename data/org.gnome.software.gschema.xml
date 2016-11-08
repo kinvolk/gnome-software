@@ -5,18 +5,32 @@
       <summary>A list of compatible projects</summary>
       <description>This is a list of compatible projects we should show such as GNOME, KDE and XFCE.</description>
     </key>
+    <key name="allow-updates" type="b">
+      <default>true</default>
+      <summary>Whether to manage updates in GNOME Software</summary>
+      <description>If disabled, GNOME Software will hide the updates panel and not perform any automatic updates actions.</description>
+    </key>
     <key name="download-updates" type="b">
       <default>true</default>
       <summary>Whether to automatically download updates</summary>
       <description>If enabled, GNOME Software automatically downloads updates in the background and prompts the user to install them when ready.</description>
     </key>
+    <key name="refresh-when-metered" type="b">
+      <default>false</default>
+      <summary>Whether to automatically refresh when on a metered connection</summary>
+      <description>If enabled, GNOME Software automatically refreshes in the background even when using a metered connection (eventually downloading some metadata, checking for updates, etc., which may incur in costs for the user).</description>
+    </key>
     <key name="first-run" type="b">
       <default>true</default>
-      <summary>Whether it's the very first run of GNOME Software</summary>
+      <summary>Whether it’s the very first run of GNOME Software</summary>
     </key>
     <key name="show-ratings" type="b">
       <default>false</default>
       <summary>Show star ratings next to applications</summary>
+    </key>
+    <key name="filter-default-branch" type="b">
+      <default>true</default>
+      <summary>Filter applications based on the default branch set for the remote</summary>
     </key>
     <key name="prompt-for-nonfree" type="b">
       <default>true</default>
@@ -37,6 +51,10 @@
       <default>0</default>
       <summary>The last update check timestamp</summary>
     </key>
+    <key name="upgrade-notification-timestamp" type="x">
+      <default>0</default>
+      <summary>The last upgrade notification timestamp</summary>
+    </key>
     <key name="security-timestamp" type="x">
       <default>0</default>
       <summary>The timestamp of the first security update, cleared after update</summary>
@@ -46,7 +64,7 @@
       <summary>The last update timestamp</summary>
     </key>
     <key name="review-server" type="s">
-      <default>'https://apps-xdgapp.rhcloud.com/1.0/reviews/api'</default>
+      <default>'https://odrs.gnome.org/1.0/reviews/api'</default>
       <summary>The server to use for application reviews</summary>
     </key>
     <key name="review-karma-required" type="i">
@@ -85,6 +103,26 @@
     <key name="show-nonfree-ui" type="b">
       <default>true</default>
       <summary>Show some UI elements informing the user that an app is non-free</summary>
+    </key>
+    <key name="show-nonfree-prompt" type="b">
+      <default>true</default>
+      <summary>Show the prompt to install nonfree software sources</summary>
+    </key>
+    <key name="show-nonfree-software" type="b">
+      <default>false</default>
+      <summary>Show non-free software in search results</summary>
+    </key>
+    <key name="nonfree-software-uri" type="s">
+      <default>'https://en.wikipedia.org/wiki/Proprietary_software'</default>
+      <summary>The URI that explains nonfree and proprietary software</summary>
+    </key>
+    <key name="nonfree-sources" type="as">
+      <default>[]</default>
+      <summary>A list of non-free sources that can be optionally enabled</summary>
+    </key>
+    <key name="external-appstream-urls" type="as">
+      <default>[]</default>
+      <summary>A list of URLs pointing to appstream files that will be downloaded into an app-info folder</summary>
     </key>
   </schema>
 </schemalist>

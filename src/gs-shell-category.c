@@ -91,7 +91,7 @@ gs_shell_category_get_apps_cb (GObject *source_object,
 							  res,
 							  &error);
 	if (list == NULL) {
-		if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+		if (!g_error_matches (error, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_CANCELLED))
 			g_warning ("failed to get apps for category apps: %s", error->message);
 		return;
 	}
@@ -104,6 +104,9 @@ gs_shell_category_get_apps_cb (GObject *source_object,
 		gtk_container_add (GTK_CONTAINER (self->category_detail_box), tile);
 		gtk_widget_set_can_focus (gtk_widget_get_parent (tile), FALSE);
 	}
+
+	/* seems a good place */
+	gs_shell_profile_dump (self->shell);
 }
 
 static void
@@ -189,8 +192,12 @@ gs_shell_category_create_filter_list (GsShellCategory *self,
 	children = gs_category_get_children (category);
 	for (i = 0; i < children->len; i++) {
 		s = GS_CATEGORY (g_ptr_array_index (children, i));
-		if (gs_category_get_size (s) < 1)
+		if (gs_category_get_size (s) < 1) {
+			g_debug ("not showing %s/%s as no apps",
+				 gs_category_get_id (category),
+				 gs_category_get_id (s));
 			continue;
+		}
 		row = gtk_label_new (gs_category_get_name (s));
 		g_object_set_data_full (G_OBJECT (row), "category", g_object_ref (s), g_object_unref);
 		g_object_set (row, "xalign", 0.0, "margin", 10, NULL);

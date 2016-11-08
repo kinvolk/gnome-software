@@ -136,13 +136,15 @@ gs_plugin_packagekit_refresh_guess_app_id (GsPlugin *plugin,
 					     cancellable,
 					     gs_plugin_packagekit_progress_cb, &data,
 					     error);
-	if (!gs_plugin_packagekit_results_valid (results, error))
+	if (!gs_plugin_packagekit_results_valid (results, error)) {
+		gs_utils_error_add_unique_id (error, app);
 		return FALSE;
+	}
 	array = pk_results_get_files_array (results);
 	if (array->len == 0) {
 		g_set_error (error,
 			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
+			     GS_PLUGIN_ERROR_INVALID_FORMAT,
 			     "no files for %s", filename);
 		return FALSE;
 	}
@@ -222,14 +224,14 @@ gs_plugin_file_to_app (GsPlugin *plugin,
 	if (array->len == 0) {
 		g_set_error (error,
 			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
+			     GS_PLUGIN_ERROR_INVALID_FORMAT,
 			     "no details for %s", filename);
 		return FALSE;
 	}
 	if (array->len > 1) {
 		g_set_error (error,
 			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
+			     GS_PLUGIN_ERROR_INVALID_FORMAT,
 			     "too many details [%u] for %s",
 			     array->len, filename);
 		return FALSE;

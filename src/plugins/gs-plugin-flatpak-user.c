@@ -43,8 +43,11 @@ void
 gs_plugin_initialize (GsPlugin *plugin)
 {
 	GsPluginData *priv = gs_plugin_alloc_data (plugin, sizeof(GsPluginData));
-	priv->flatpak = gs_flatpak_new (plugin, GS_FLATPAK_SCOPE_USER);
+	priv->flatpak = gs_flatpak_new (plugin, AS_APP_SCOPE_USER);
 	priv->settings = g_settings_new ("org.gnome.software");
+
+	/* set plugin flags */
+	gs_plugin_add_flags (plugin, GS_PLUGIN_FLAGS_GLOBAL_CACHE);
 
 	/* getting app properties from appstream is quicker */
 	gs_plugin_add_rule (plugin, GS_PLUGIN_RULE_RUN_AFTER, "appstream");
@@ -64,8 +67,8 @@ gs_plugin_destroy (GsPlugin *plugin)
 void
 gs_plugin_adopt_app (GsPlugin *plugin, GsApp *app)
 {
-	const gchar *id = gs_app_get_id (app);
-	if (id != NULL && g_str_has_prefix (id, GS_FLATPAK_USER_PREFIX ":")) {
+	if (gs_app_get_bundle_kind (app) == AS_BUNDLE_KIND_FLATPAK &&
+	    gs_app_get_scope (app) == AS_APP_SCOPE_USER) {
 		gs_app_set_management_plugin (app, gs_plugin_get_name (plugin));
 	}
 }
@@ -108,6 +111,16 @@ gs_plugin_add_updates (GsPlugin *plugin,
 }
 
 gboolean
+gs_plugin_add_updates_pending (GsPlugin *plugin,
+			       GsAppList *list,
+			       GCancellable *cancellable,
+			       GError **error)
+{
+	GsPluginData *priv = gs_plugin_get_data (plugin);
+	return gs_flatpak_add_updates_pending (priv->flatpak, list, cancellable, error);
+}
+
+gboolean
 gs_plugin_refresh (GsPlugin *plugin,
 		   guint cache_age,
 		   GsPluginRefreshFlags flags,
@@ -129,6 +142,19 @@ gs_plugin_refine_app (GsPlugin *plugin,
 	GsPluginData *priv = gs_plugin_get_data (plugin);
 	return gs_flatpak_refine_app (priv->flatpak, app, flags,
 				      cancellable, error);
+}
+
+gboolean
+gs_plugin_refine_wildcard (GsPlugin *plugin,
+			   GsApp *app,
+			   GsAppList *list,
+			   GsPluginRefineFlags flags,
+			   GCancellable *cancellable,
+			   GError **error)
+{
+	GsPluginData *priv = gs_plugin_get_data (plugin);
+	return gs_flatpak_refine_wildcard (priv->flatpak, app, list, flags,
+					   cancellable, error);
 }
 
 gboolean
@@ -191,4 +217,71 @@ gs_plugin_file_to_app (GsPlugin *plugin,
 
 	return gs_flatpak_file_to_app (priv->flatpak, list, file,
 				       cancellable, error);
+}
+
+gboolean
+gs_plugin_add_search (GsPlugin *plugin,
+		      gchar **values,
+		      GsAppList *list,
+		      GCancellable *cancellable,
+		      GError **error)
+{
+	GsPluginData *priv = gs_plugin_get_data (plugin);
+	return gs_flatpak_search (priv->flatpak,
+				  values,
+				  list,
+				  cancellable,
+				  error);
+}
+
+gboolean
+gs_plugin_add_categories (GsPlugin *plugin,
+			  GPtrArray *list,
+			  GCancellable *cancellable,
+			  GError **error)
+{
+	GsPluginData *priv = gs_plugin_get_data (plugin);
+	return gs_flatpak_add_categories (priv->flatpak, list,
+					  cancellable, error);
+}
+
+gboolean
+gs_plugin_add_category_apps (GsPlugin *plugin,
+			     GsCategory *category,
+			     GsAppList *list,
+			     GCancellable *cancellable,
+			     GError **error)
+{
+	GsPluginData *priv = gs_plugin_get_data (plugin);
+	return gs_flatpak_add_category_apps (priv->flatpak,
+					     category,
+					     list,
+					     cancellable,
+					     error);
+}
+
+gboolean
+gs_plugin_add_popular (GsPlugin *plugin,
+		       GsAppList *list,
+		       GCancellable *cancellable,
+		       GError **error)
+{
+	GsPluginData *priv = gs_plugin_get_data (plugin);
+	return gs_flatpak_add_popular (priv->flatpak,
+				       list,
+				       cancellable,
+				       error);
+}
+
+gboolean
+gs_plugin_add_featured (GsPlugin *plugin,
+			GsAppList *list,
+			GCancellable *cancellable,
+			GError **error)
+{
+	GsPluginData *priv = gs_plugin_get_data (plugin);
+	return gs_flatpak_add_featured (priv->flatpak,
+					list,
+					cancellable,
+					error);
 }

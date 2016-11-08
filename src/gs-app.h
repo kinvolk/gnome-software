@@ -98,22 +98,32 @@ typedef enum {
 } GsAppQuality;
 
 GsApp		*gs_app_new			(const gchar	*id);
+GsApp		*gs_app_new_from_unique_id	(const gchar	*unique_id);
 gchar		*gs_app_to_string		(GsApp		*app);
 
 const gchar	*gs_app_get_id			(GsApp		*app);
 void		 gs_app_set_id			(GsApp		*app,
 						 const gchar	*id);
-const gchar	*gs_app_get_id_no_prefix	(GsApp		*app);
 AsAppKind	 gs_app_get_kind		(GsApp		*app);
 void		 gs_app_set_kind		(GsApp		*app,
 						 AsAppKind	 kind);
 AsAppState	 gs_app_get_state		(GsApp		*app);
 void		 gs_app_set_state		(GsApp		*app,
 						 AsAppState	 state);
+AsAppScope	 gs_app_get_scope		(GsApp		*app);
+void		 gs_app_set_scope		(GsApp		*app,
+						 AsAppScope	 scope);
+AsBundleKind	 gs_app_get_bundle_kind		(GsApp		*app);
+void		 gs_app_set_bundle_kind		(GsApp		*app,
+						 AsBundleKind	 bundle_kind);
 void		 gs_app_set_state_recover	(GsApp		*app);
 guint		 gs_app_get_progress		(GsApp		*app);
 void		 gs_app_set_progress		(GsApp		*app,
 						 guint		 percentage);
+const gchar	*gs_app_get_unique_id		(GsApp		*app);
+const gchar	*gs_app_get_branch		(GsApp		*app);
+void		 gs_app_set_branch		(GsApp		*app,
+						 const gchar	*branch);
 const gchar	*gs_app_get_name		(GsApp		*app);
 void		 gs_app_set_name		(GsApp		*app,
 						 GsAppQuality	 quality,
@@ -196,6 +206,9 @@ void		 gs_app_add_icon		(GsApp		*app,
 GFile		*gs_app_get_local_file		(GsApp		*app);
 void		 gs_app_set_local_file		(GsApp		*app,
 						 GFile		*local_file);
+AsContentRating	*gs_app_get_content_rating	(GsApp		*app);
+void		 gs_app_set_content_rating	(GsApp		*app,
+						 AsContentRating *content_rating);
 GsApp		*gs_app_get_runtime		(GsApp		*app);
 void		 gs_app_set_runtime		(GsApp		*app,
 						 GsApp		*runtime);
@@ -219,6 +232,9 @@ void		 gs_app_add_review		(GsApp		*app,
 						 AsReview	*review);
 void		 gs_app_remove_review		(GsApp		*app,
 						 AsReview	*review);
+GPtrArray	*gs_app_get_provides		(GsApp		*app);
+void		 gs_app_add_provide		(GsApp		*app,
+						 AsProvide	*provide);
 guint64		 gs_app_get_size_installed	(GsApp		*app);
 void		 gs_app_set_size_installed	(GsApp		*app,
 						 guint64	 size_installed);
@@ -254,6 +270,8 @@ void		 gs_app_set_keywords		(GsApp		*app,
 						 GPtrArray	*keywords);
 void		 gs_app_add_kudo		(GsApp		*app,
 						 GsAppKudo	 kudo);
+gboolean	 gs_app_has_kudo		(GsApp		*app,
+						 GsAppKudo	 kudo);
 guint64		 gs_app_get_kudos		(GsApp		*app);
 guint		 gs_app_get_kudos_percentage	(GsApp		*app);
 gboolean	 gs_app_get_to_be_installed	(GsApp		*app);
@@ -269,6 +287,8 @@ void		 gs_app_add_quirk		(GsApp		*app,
 						 AsAppQuirk	 quirk);
 void		 gs_app_remove_quirk		(GsApp		*app,
 						 AsAppQuirk	 quirk);
+gboolean	 gs_app_is_installed		(GsApp		*app);
+gboolean	 gs_app_is_updatable		(GsApp		*app);
 G_END_DECLS
 
 #endif /* __GS_APP_H */

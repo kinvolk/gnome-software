@@ -40,6 +40,7 @@ struct GsPluginData {
 	gchar			*user_hash;
 	gchar			*review_server;
 	GHashTable		*ratings;
+	GsApp			*cached_origin;
 };
 
 void
@@ -74,6 +75,18 @@ gs_plugin_initialize (GsPlugin *plugin)
 		g_warning ("failed to get distro name: %s", error->message);
 		priv->distro = g_strdup ("Unknown");
 	}
+
+	/* add source */
+	priv->cached_origin = gs_app_new (gs_plugin_get_name (plugin));
+	gs_app_set_kind (priv->cached_origin, AS_APP_KIND_SOURCE);
+	gs_app_set_origin_hostname (priv->cached_origin, priv->review_server);
+	gs_app_set_origin_ui (priv->cached_origin, "Open Desktop Review Server");
+
+	/* add the source to the plugin cache which allows us to match the
+	 * unique ID to a GsApp when creating an event */
+	gs_plugin_cache_add (plugin,
+			     gs_app_get_unique_id (priv->cached_origin),
+			     priv->cached_origin);
 
 	/* need application IDs and version */
 	gs_plugin_add_rule (plugin, GS_PLUGIN_RULE_RUN_AFTER, "appstream");
@@ -116,20 +129,22 @@ gs_plugin_odrs_load_ratings (GsPlugin *plugin, const gchar *fn, GError **error)
 
 	/* parse the data and find the success */
 	json_parser = json_parser_new ();
-	if (!json_parser_load_from_file (json_parser, fn, error))
+	if (!json_parser_load_from_file (json_parser, fn, error)) {
+		gs_utils_error_convert_json_glib (error);
 		return FALSE;
+	}
 	json_root = json_parser_get_root (json_parser);
 	if (json_root == NULL) {
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_INVALID_FORMAT,
 				     "no ratings root");
 		return FALSE;
 	}
 	if (json_node_get_node_type (json_root) != JSON_NODE_OBJECT) {
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_INVALID_FORMAT,
 				     "no ratings array");
 		return FALSE;
 	}
@@ -181,8 +196,10 @@ gs_plugin_odrs_refresh_ratings (GsPlugin *plugin,
 
 	/* download the complete file */
 	uri = g_strdup_printf ("%s/ratings", priv->review_server);
-	if (!gs_plugin_download_file (plugin, app_dl, uri, fn, cancellable, error))
+	if (!gs_plugin_download_file (plugin, app_dl, uri, fn, cancellable, error)) {
+		gs_utils_error_add_unique_id (error, priv->cached_origin);
 		return FALSE;
+	}
 	return gs_plugin_odrs_load_ratings (plugin, fn, error);
 }
 
@@ -221,6 +238,7 @@ gs_plugin_destroy (GsPlugin *plugin)
 	g_free (priv->distro);
 	g_hash_table_unref (priv->ratings);
 	g_object_unref (priv->settings);
+	g_object_unref (priv->cached_origin);
 }
 
 static AsReview *
@@ -307,27 +325,29 @@ gs_plugin_odrs_parse_reviews (GsPlugin *plugin,
 	if (data == NULL) {
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_INVALID_FORMAT,
 				     "server returned no data");
 		return NULL;
 	}
 
 	/* parse the data and find the array or ratings */
 	json_parser = json_parser_new ();
-	if (!json_parser_load_from_data (json_parser, data, data_len, error))
+	if (!json_parser_load_from_data (json_parser, data, data_len, error)) {
+		gs_utils_error_convert_json_glib (error);
 		return NULL;
+	}
 	json_root = json_parser_get_root (json_parser);
 	if (json_root == NULL) {
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_INVALID_FORMAT,
 				     "no root");
 		return NULL;
 	}
 	if (json_node_get_node_type (json_root) != JSON_NODE_ARRAY) {
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_INVALID_FORMAT,
 				     "no array");
 		return NULL;
 	}
@@ -345,7 +365,7 @@ gs_plugin_odrs_parse_reviews (GsPlugin *plugin,
 		if (json_node_get_node_type (json_review) != JSON_NODE_OBJECT) {
 			g_set_error_literal (error,
 					     GS_PLUGIN_ERROR,
-					     GS_PLUGIN_ERROR_FAILED,
+					     GS_PLUGIN_ERROR_INVALID_FORMAT,
 					     "no object type");
 			return NULL;
 		}
@@ -353,7 +373,7 @@ gs_plugin_odrs_parse_reviews (GsPlugin *plugin,
 		if (json_item == NULL) {
 			g_set_error_literal (error,
 					     GS_PLUGIN_ERROR,
-					     GS_PLUGIN_ERROR_FAILED,
+					     GS_PLUGIN_ERROR_INVALID_FORMAT,
 					     "no object");
 			return NULL;
 		}
@@ -378,27 +398,29 @@ gs_plugin_odrs_parse_success (const gchar *data, gssize data_len, GError **error
 	if (data == NULL) {
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_INVALID_FORMAT,
 				     "server returned no data");
 		return FALSE;
 	}
 
 	/* parse the data and find the success */
 	json_parser = json_parser_new ();
-	if (!json_parser_load_from_data (json_parser, data, data_len, error))
+	if (!json_parser_load_from_data (json_parser, data, data_len, error)) {
+		gs_utils_error_convert_json_glib (error);
 		return FALSE;
+	}
 	json_root = json_parser_get_root (json_parser);
 	if (json_root == NULL) {
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_INVALID_FORMAT,
 				     "no error root");
 		return FALSE;
 	}
 	if (json_node_get_node_type (json_root) != JSON_NODE_OBJECT) {
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_INVALID_FORMAT,
 				     "no error object");
 		return FALSE;
 	}
@@ -406,7 +428,7 @@ gs_plugin_odrs_parse_success (const gchar *data, gssize data_len, GError **error
 	if (json_item == NULL) {
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_INVALID_FORMAT,
 				     "no error object");
 		return FALSE;
 	}
@@ -417,7 +439,7 @@ gs_plugin_odrs_parse_success (const gchar *data, gssize data_len, GError **error
 	if (!json_object_get_boolean_member (json_item, "success")) {
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_INVALID_FORMAT,
 				     msg != NULL ? msg : "unknown failure");
 		return FALSE;
 	}
@@ -458,18 +480,24 @@ gs_plugin_odrs_json_post (SoupSession *session,
 }
 
 static gboolean
-gs_plugin_refine_ratings (GsPlugin *plugin,
-			  GsApp *app,
-			  GCancellable *cancellable,
-			  GError **error)
+gs_plugin_odrs_refine_ratings (GsPlugin *plugin,
+			       GsApp *app,
+			       GCancellable *cancellable,
+			       GError **error)
 {
 	GsPluginData *priv = gs_plugin_get_data (plugin);
 	GArray *review_ratings;
 	gint rating;
+	g_autoptr(AsProfileTask) ptask = NULL;
+
+	/* profile */
+	ptask = as_profile_start_literal (gs_plugin_get_profile (plugin),
+					  "odrs::refine-ratings");
+	g_assert (ptask != NULL);
 
 	/* get ratings */
 	review_ratings = g_hash_table_lookup (priv->ratings,
-					      gs_app_get_id_no_prefix (app));
+					      gs_app_get_id (app));
 	if (review_ratings == NULL)
 		return TRUE;
 	gs_app_set_review_ratings (app, review_ratings);
@@ -503,7 +531,7 @@ gs_plugin_odrs_fetch_for_app (GsPlugin *plugin, GsApp *app, GError **error)
 	g_autoptr(SoupMessage) msg = NULL;
 
 	/* look in the cache */
-	cachefn_basename = g_strdup_printf ("%s.json", gs_app_get_id_no_prefix (app));
+	cachefn_basename = g_strdup_printf ("%s.json", gs_app_get_id (app));
 	cachefn = gs_utils_get_cache_filename ("reviews",
 					       cachefn_basename,
 					       GS_UTILS_CACHE_FLAG_WRITEABLE,
@@ -516,7 +544,7 @@ gs_plugin_odrs_fetch_for_app (GsPlugin *plugin, GsApp *app, GError **error)
 		if (!g_file_get_contents (cachefn, &json_data, NULL, error))
 			return NULL;
 		g_debug ("got review data for %s from %s",
-			 gs_app_get_id_no_prefix (app), cachefn);
+			 gs_app_get_id (app), cachefn);
 		return gs_plugin_odrs_parse_reviews (plugin,
 						     json_data, -1,
 						     error);
@@ -533,7 +561,7 @@ gs_plugin_odrs_fetch_for_app (GsPlugin *plugin, GsApp *app, GError **error)
 	json_builder_set_member_name (builder, "user_hash");
 	json_builder_add_string_value (builder, priv->user_hash);
 	json_builder_set_member_name (builder, "app_id");
-	json_builder_add_string_value (builder, gs_app_get_id_no_prefix (app));
+	json_builder_add_string_value (builder, gs_app_get_id (app));
 	json_builder_set_member_name (builder, "locale");
 	json_builder_add_string_value (builder, gs_plugin_get_locale (plugin));
 	json_builder_set_member_name (builder, "distro");
@@ -565,8 +593,9 @@ gs_plugin_odrs_fetch_for_app (GsPlugin *plugin, GsApp *app, GError **error)
 		/* not sure what to do here */
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_DOWNLOAD_FAILED,
 				     "status code invalid");
+		gs_utils_error_add_unique_id (error, priv->cached_origin);
 		return NULL;
 	}
 	reviews = gs_plugin_odrs_parse_reviews (plugin,
@@ -589,15 +618,21 @@ gs_plugin_odrs_fetch_for_app (GsPlugin *plugin, GsApp *app, GError **error)
 }
 
 static gboolean
-gs_plugin_refine_reviews (GsPlugin *plugin,
-			  GsApp *app,
-			  GCancellable *cancellable,
-			  GError **error)
+gs_plugin_odrs_refine_reviews (GsPlugin *plugin,
+			       GsApp *app,
+			       GCancellable *cancellable,
+			       GError **error)
 {
 	GsPluginData *priv = gs_plugin_get_data (plugin);
 	AsReview *review;
 	guint i;
+	g_autoptr(AsProfileTask) ptask = NULL;
 	g_autoptr(GPtrArray) reviews = NULL;
+
+	/* profile */
+	ptask = as_profile_start_literal (gs_plugin_get_profile (plugin),
+					  "odrs::refine-reviews");
+	g_assert (ptask != NULL);
 
 	/* get from server */
 	reviews = gs_plugin_odrs_fetch_for_app (plugin, app, error);
@@ -615,8 +650,6 @@ gs_plugin_refine_reviews (GsPlugin *plugin,
 
 		/* ignore invalid reviews */
 		if (as_review_get_rating (review) == 0)
-			continue;
-		if (as_review_get_reviewer_name (review) == NULL)
 			continue;
 
 		/* the user_hash matches, so mark this as our own review */
@@ -639,15 +672,15 @@ gs_plugin_refine_app (GsPlugin *plugin,
 	/* not valid */
 	if (gs_app_get_kind (app) == AS_APP_KIND_ADDON)
 		return TRUE;
-	if (gs_app_get_id_no_prefix (app) == NULL)
+	if (gs_app_get_id (app) == NULL)
 		return TRUE;
 
 	/* add reviews if possible */
 	if (flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_REVIEWS) {
 		if (gs_app_get_reviews(app)->len > 0)
 			return TRUE;
-		if (!gs_plugin_refine_reviews (plugin, app,
-					       cancellable, error))
+		if (!gs_plugin_odrs_refine_reviews (plugin, app,
+						    cancellable, error))
 			return FALSE;
 	}
 
@@ -656,8 +689,8 @@ gs_plugin_refine_app (GsPlugin *plugin,
 	    flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_RATING) {
 		if (gs_app_get_review_ratings(app) != NULL)
 			return TRUE;
-		if (!gs_plugin_refine_ratings (plugin, app,
-					       cancellable, error))
+		if (!gs_plugin_odrs_refine_ratings (plugin, app,
+						    cancellable, error))
 			return FALSE;
 	}
 
@@ -730,7 +763,7 @@ gs_plugin_review_submit (GsPlugin *plugin,
 
 	/* save as we don't re-request the review from the server */
 	as_review_set_reviewer_name (review, g_get_real_name ());
-	as_review_add_metadata (review, "app_id", gs_app_get_id_no_prefix (app));
+	as_review_add_metadata (review, "app_id", gs_app_get_id (app));
 	as_review_add_metadata (review, "user_skey",
 				gs_app_get_metadata_item (app, "ODRS::user_skey"));
 
@@ -945,8 +978,9 @@ gs_plugin_add_unvoted_reviews (GsPlugin *plugin,
 		/* not sure what to do here */
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_DOWNLOAD_FAILED,
 				     "status code invalid");
+		gs_utils_error_add_unique_id (error, priv->cached_origin);
 		return FALSE;
 	}
 	g_debug ("odrs returned: %s", msg->response_body->data);

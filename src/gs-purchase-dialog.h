@@ -26,7 +26,6 @@
 
 #include "gs-app.h"
 #include "gs-price.h"
-#include "gs-payment-method.h"
 
 G_BEGIN_DECLS
 
@@ -39,12 +38,7 @@ GtkWidget	*gs_purchase_dialog_new			(void);
 void		 gs_purchase_dialog_set_app		(GsPurchaseDialog	*dialog,
 							 GsApp			*app);
 
-void		 gs_purchase_dialog_set_payment_methods	(GsPurchaseDialog	*dialog,
-							 GPtrArray		*payment_methods);
-
 GsPrice		*gs_purchase_dialog_get_price		(GsPurchaseDialog	*dialog);
-
-GsPaymentMethod	*gs_purchase_dialog_get_payment_method	(GsPurchaseDialog	*dialog);
 
 G_END_DECLS
 

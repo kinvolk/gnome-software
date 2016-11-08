@@ -43,36 +43,8 @@ gs_purchase_dialog_set_app (GsPurchaseDialog *dialog, GsApp *app)
 	g_return_if_fail (GS_IS_PURCHASE_DIALOG (dialog));
 }
 
-void
-gs_purchase_dialog_set_payment_methods (GsPurchaseDialog *dialog, GPtrArray *payment_methods)
-{
-	guint i;
-
-	g_return_if_fail (GS_IS_PURCHASE_DIALOG (dialog));
-
-	gtk_list_store_clear (dialog->model_payment_method);
-	for (i = 0; i < payment_methods->len; i++) {
-		GtkTreeIter iter;
-		GsPaymentMethod *method = payment_methods->pdata[i];
-
-		gtk_list_store_append (dialog->model_payment_method, &iter);
-		gtk_list_store_set (dialog->model_payment_method, &iter,
-				    0, gs_payment_method_get_description (method),
-				    1, method,
-				    -1);
-	}
-}
-
-
 GsPrice *
 gs_purchase_dialog_get_price (GsPurchaseDialog *dialog)
-{
-	g_return_val_if_fail (GS_IS_PURCHASE_DIALOG (dialog), NULL);
-	return NULL;
-}
-
-GsPaymentMethod *
-gs_purchase_dialog_get_payment_method (GsPurchaseDialog *dialog)
 {
 	g_return_val_if_fail (GS_IS_PURCHASE_DIALOG (dialog), NULL);
 	return NULL;

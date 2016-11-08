@@ -1,7 +1,7 @@
 # Copyright (C) 2010-2015 Richard Hughes <richard@hughsie.com>
 AC_PREREQ(2.63)
 
-AC_INIT([gnome-software],[3.21.5],[http://bugzilla.gnome.org/enter_bug.cgi?product=gnome-software])
+AC_INIT([gnome-software],[3.23.1],[http://bugzilla.gnome.org/enter_bug.cgi?product=gnome-software])
 AC_CONFIG_SRCDIR(src)
 AM_INIT_AUTOMAKE([1.11 no-dist-gzip dist-xz tar-ustar serial-tests foreign])
 AC_CONFIG_HEADERS([config.h])
@@ -22,31 +22,52 @@ GTK_DOC_CHECK([1.11],[--flavour no-tmpl])
 dnl ---------------------------------------------------------------------------
 dnl - Extra verbose warning switches
 dnl ---------------------------------------------------------------------------
-
-GNOME_COMPILE_WARNINGS([maximum],[
-	-Wmissing-declarations
-	-Wcast-align
-	-Wwrite-strings
-	-Wreturn-type
-	-Wformat-nonliteral
-	-Wmissing-format-attribute
-	-Wclobbered
-	-Wempty-body
-	-Wignored-qualifiers
-	-Wsign-compare
-	-Wtype-limits
-	-Wuninitialized
+WARN_CFLAGS_EXTRA="
 	-Waggregate-return
+	-Warray-bounds
+	-Wcast-align
+	-Wclobbered
 	-Wdeclaration-after-statement
-	-Wshadow
-	-Wno-strict-aliasing
-	-Winline
-	-Wmissing-parameter-type
-	-Woverride-init
-	-Wno-discarded-qualifiers
-	-Wconversion
+	-Wempty-body
+	-Wextra
+	-Wformat=2
+	-Wformat-nonliteral
+	-Wformat-security
 	-Wformat-signedness
-])
+	-Wignored-qualifiers
+	-Wimplicit-function-declaration
+	-Winit-self
+	-Winline
+	-Wmissing-declarations
+	-Wmissing-format-attribute
+	-Wmissing-include-dirs
+	-Wmissing-noreturn
+	-Wmissing-parameter-type
+	-Wmissing-prototypes
+	-Wnested-externs
+	-Wno-discarded-qualifiers
+	-Wno-missing-field-initializers
+	-Wno-strict-aliasing
+	-Wno-suggest-attribute=format
+	-Wno-unused-parameter
+	-Wold-style-definition
+	-Woverride-init
+	-Wpacked
+	-Wpointer-arith
+	-Wredundant-decls
+	-Wreturn-type
+	-Wshadow
+	-Wsign-compare
+	-Wstrict-aliasing
+	-Wstrict-prototypes
+	-Wswitch-default
+	-Wtype-limits
+	-Wundef
+	-Wuninitialized
+	-Wunused-but-set-variable
+	-Wwrite-strings"
+AX_APPEND_COMPILE_FLAGS([$WARN_CFLAGS_EXTRA], [WARN_CFLAGS])
+AC_SUBST(WARN_CFLAGS)
 
 dnl ---------------------------------------------------------------------------
 dnl - gettext stuff
@@ -62,8 +83,8 @@ GLIB_GSETTINGS
 dnl ---------------------------------------------------------------------------
 dnl - Check library dependencies
 dnl ---------------------------------------------------------------------------
-PKG_CHECK_MODULES(GTK, gtk+-3.0 >= 3.18.2 gio-unix-2.0)
-PKG_CHECK_MODULES(APPSTREAM, appstream-glib >= 0.5.18)
+PKG_CHECK_MODULES(GTK, gtk+-3.0 >= 3.20.0 gio-unix-2.0)
+PKG_CHECK_MODULES(APPSTREAM, appstream-glib >= 0.6.5)
 PKG_CHECK_MODULES(GDK_PIXBUF, gdk-pixbuf-2.0 >= 2.31.5)
 PKG_CHECK_MODULES(JSON_GLIB, json-glib-1.0 >= 1.1.1)
 PKG_CHECK_MODULES(SQLITE, sqlite3)
@@ -221,7 +242,7 @@ AC_ARG_ENABLE(flatpak,
               enable_flatpak=maybe)
 AS_IF([test "x$enable_flatpak" != "xno"], [
     PKG_CHECK_MODULES(FLATPAK,
-                      [flatpak >= 0.4.14],
+                      [flatpak >= 0.6.12],
                       [have_flatpak=yes],
                       [have_flatpak=no])
 ], [
@@ -347,11 +368,62 @@ AC_ARG_ENABLE(webapps,
               enable_webapps=yes)
 AM_CONDITIONAL(HAVE_WEBAPPS, [test "x$enable_webapps" = "xyes"])
 
+# GUDev
+AC_ARG_ENABLE(gudev,
+              [AS_HELP_STRING([--enable-gudev],
+                              [enable GUDev support [default=auto]])],,
+              enable_gudev=maybe)
+AS_IF([test "x$enable_gudev" != "xno"], [
+    PKG_CHECK_MODULES(GUDEV,
+                      gudev-1.0,
+                      [have_gudev=yes],
+                      [have_gudev=no])
+], [
+    have_gudev=no
+])
+AS_IF([test "x$have_gudev" = "xyes"], [
+    AC_DEFINE(HAVE_GUDEV, 1, [Build GUDev support])
+], [
+    AS_IF([test "x$enable_gudev" = "xyes"], [
+          AC_MSG_ERROR([GUDEV support requested but 'gudev-1.0' was not found])
+    ])
+])
+AM_CONDITIONAL(HAVE_GUDEV, test x$have_gudev = xyes)
+
 # this refers to the gnome-software plugin API version
 # this is not in any way related to a package or soname version
 GS_PLUGIN_API_VERSION=11
 AC_SUBST(GS_PLUGIN_API_VERSION)
 AC_DEFINE_UNQUOTED([GS_PLUGIN_API_VERSION], "$GS_PLUGIN_API_VERSION", [the plugin API version])
+
+# Snap
+AC_ARG_ENABLE(snap,
+              [AS_HELP_STRING([--enable-snap],
+                              [enable Snap support [default=auto]])],,
+              enable_snap=maybe)
+AS_IF([test "x$enable_snap" != "xno"], [
+    PKG_CHECK_MODULES(SNAP,
+                      [snapd-glib],
+                      [have_snap=yes],
+                      [have_snap=no])
+], [
+    have_snap=no
+])
+AS_IF([test "x$have_snap" = "xyes"], [
+    AC_DEFINE(HAVE_SNAP,1,[Build Snap support])
+], [
+    AS_IF([test "x$enable_snap" = "xyes"], [
+          AC_MSG_ERROR([Snap support requested but 'snapd-glib' was not found])
+    ])
+])
+AM_CONDITIONAL(HAVE_SNAP, test "$have_snap" != no)
+
+# External appstream
+AC_ARG_ENABLE(external-appstream,
+              [AS_HELP_STRING([--enable-external-appstream],
+                              [enable External Appstream support [default=yes]])],,
+              enable_external_appstream=yes)
+AM_CONDITIONAL(HAVE_EXTERNAL_APPSTREAM, test "x$enable_external_appstream" = "xyes")
 
 GLIB_TESTS
 
@@ -403,9 +475,12 @@ echo "
         GtkSpell support:          ${have_gtkspell}
         GNOME desktop support:     ${have_gnome_desktop}
         RPM support:               ${have_rpm}
+        GUDev support:             ${have_gudev}
         Steam support:             ${enable_steam}
         GNOME Shell ext. support:  ${enable_shell_extensions}
         ODRS support:              ${enable_odrs}
         Webapps support:           ${enable_webapps}
         Ubuntu Reviews support:    ${enable_ubuntu_reviews}
+        Snap support:              ${have_snap}
+        Ext. appstream support:    ${enable_external_appstream}
 "

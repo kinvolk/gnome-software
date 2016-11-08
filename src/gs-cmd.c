@@ -187,6 +187,7 @@ gs_cmd_refresh_flag_from_string (const gchar *flag)
 int
 main (int argc, char **argv)
 {
+	AsProfile *profile = NULL;
 	GOptionContext *context;
 	gboolean prefer_local = FALSE;
 	gboolean ret;
@@ -209,7 +210,6 @@ main (int argc, char **argv)
 	g_autoptr(GsApp) app = NULL;
 	g_autoptr(GFile) file = NULL;
 	g_autoptr(GsPluginLoader) plugin_loader = NULL;
-	g_autoptr(AsProfile) profile = NULL;
 	g_autoptr(AsProfileTask) ptask = NULL;
 	const GOptionEntry options[] = {
 		{ "show-results", '\0', 0, G_OPTION_ARG_NONE, &show_results,
@@ -263,12 +263,10 @@ main (int argc, char **argv)
 		goto out;
 	}
 
-	profile = as_profile_new ();
-	ptask = as_profile_start_literal (profile, "GsCmd");
-	g_assert (ptask != NULL);
-
 	/* load plugins */
 	plugin_loader = gs_plugin_loader_new ();
+	profile = gs_plugin_loader_get_profile (plugin_loader);
+	ptask = as_profile_start_literal (profile, "GsCmd");
 	gs_plugin_loader_set_location (plugin_loader, "./plugins/.libs");
 	if (plugin_whitelist_str != NULL)
 		plugin_whitelist = g_strsplit (plugin_whitelist_str, ",", -1);
@@ -317,7 +315,7 @@ main (int argc, char **argv)
 		gs_app_set_kind (app, AS_APP_KIND_OS_UPGRADE);
 		ret = gs_plugin_loader_app_action (plugin_loader,
 						   app,
-						   GS_PLUGIN_LOADER_ACTION_UPGRADE_DOWNLOAD,
+						   GS_PLUGIN_ACTION_UPGRADE_DOWNLOAD,
 						   NULL,
 						   &error);
 		if (ret)
@@ -339,7 +337,7 @@ main (int argc, char **argv)
 		for (i = 0; i < repeat; i++) {
 			ret = gs_plugin_loader_app_action (plugin_loader,
 							   app,
-							   GS_PLUGIN_LOADER_ACTION_LAUNCH,
+							   GS_PLUGIN_ACTION_LAUNCH,
 							   NULL,
 							   &error);
 			if (!ret)

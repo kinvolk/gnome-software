@@ -53,8 +53,6 @@ typedef struct {
 /* Number of pages of reviews to download */
 #define N_PAGES				3
 
-#define SECRET_SCHEMA_NAME		"com.ubuntu.UbuntuOne.GnomeSoftware"
-
 void
 gs_plugin_initialize (GsPlugin *plugin)
 {
@@ -303,35 +301,27 @@ parse_review_entries (GsPlugin *plugin, JsonParser *parser, GError **error)
 	return TRUE;
 }
 
-static gboolean
-get_ubuntuone_token (GsPlugin *plugin,
-		     gchar **consumer_key, gchar **consumer_secret,
-		     gchar **token_key, gchar **token_secret,
-		     GCancellable *cancellable, GError **error)
-{
-	GsAuth *auth = gs_plugin_get_auth_by_id (plugin, "ubuntuone");
-	if (auth == NULL) {
-		g_set_error_literal (error,
-				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
-				     "No UbuntuOne authentication provider");
-		return FALSE;
-	}
-	*consumer_key = g_strdup (gs_auth_get_metadata_item (auth, "consumer-key"));
-	*consumer_secret = g_strdup (gs_auth_get_metadata_item (auth, "consumer-secret"));
-	*token_key = g_strdup (gs_auth_get_metadata_item (auth, "token-key"));
-	*token_secret = g_strdup (gs_auth_get_metadata_item (auth, "token-secret"));
-	return TRUE;
-}
-
 static void
 sign_message (SoupMessage *message, OAuthMethod method,
-	      const gchar *consumer_key, const gchar *consumer_secret,
-	      const gchar *token_key, const gchar *token_secret)
+	      GsAuth *auth)
 {
 	g_autofree gchar *url = NULL, *oauth_authorization_parameters = NULL, *authorization_text = NULL;
 	gchar **url_parameters = NULL;
 	int url_parameters_length;
+	const gchar *consumer_key;
+	const gchar *consumer_secret;
+	const gchar *token_key;
+	const gchar *token_secret;
+
+	if (auth == NULL)
+		return;
+
+	consumer_key = gs_auth_get_metadata_item (auth, "consumer-key");
+	consumer_secret = gs_auth_get_metadata_item (auth, "consumer-secret");
+	token_key = gs_auth_get_metadata_item (auth, "token-key");
+	token_secret = gs_auth_get_metadata_item (auth, "token-secret");
+	if (consumer_key == NULL || consumer_secret == NULL || token_key == NULL || token_secret == NULL)
+		return;
 
 	url = soup_uri_to_string (soup_message_get_uri (message), FALSE);
 
@@ -358,23 +348,8 @@ send_review_request (GsPlugin *plugin,
 		     JsonParser **result,
 		     GCancellable *cancellable, GError **error)
 {
-	g_autofree gchar *consumer_key = NULL;
-	g_autofree gchar *consumer_secret = NULL;
-	g_autofree gchar *token_key = NULL;
-	g_autofree gchar *token_secret = NULL;
 	g_autofree gchar *uri = NULL;
 	g_autoptr(SoupMessage) msg = NULL;
-
-	if (do_sign && !get_ubuntuone_token (plugin,
-					     &consumer_key, &consumer_secret,
-					     &token_key, &token_secret,
-					     cancellable, NULL)) {
-		g_set_error_literal (error,
-				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_AUTH_REQUIRED,
-				     "Requires authentication with @ubuntuone");
-		return FALSE;
-	}
 
 	uri = g_strdup_printf ("%s%s",
 			       UBUNTU_REVIEWS_SERVER, path);
@@ -394,10 +369,17 @@ send_review_request (GsPlugin *plugin,
 	if (do_sign)
 		sign_message (msg,
 			      OA_PLAINTEXT,
-			      consumer_key, consumer_secret,
-			      token_key, token_secret);
+			      gs_plugin_get_auth_by_id (plugin, "ubuntuone"));
 
 	*status_code = soup_session_send_message (gs_plugin_get_soup_session (plugin), msg);
+
+	if (*status_code == SOUP_STATUS_UNAUTHORIZED) {
+		g_set_error_literal (error,
+				     GS_PLUGIN_ERROR,
+				     GS_PLUGIN_ERROR_AUTH_REQUIRED,
+				     "Requires authentication with @ubuntuone");
+		return FALSE;
+	}
 
 	if (result != NULL) {
 		g_autoptr(JsonParser) parser = NULL;
@@ -439,7 +421,7 @@ download_review_stats (GsPlugin *plugin, GCancellable *cancellable, GError **err
 	if (status_code != SOUP_STATUS_OK) {
 		g_set_error (error,
 			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
+			     GS_PLUGIN_ERROR_DOWNLOAD_FAILED,
 			     "Failed to download review stats, server returned status code %u",
 			     status_code);
 		return FALSE;

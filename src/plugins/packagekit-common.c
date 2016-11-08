@@ -82,15 +82,25 @@ packagekit_status_enum_to_plugin_status (PkStatusEnum status)
 }
 
 gboolean
-gs_plugin_packagekit_convert_gerror (GError **error)
+gs_plugin_packagekit_error_convert (GError **error)
 {
 	GError *error_tmp;
 
 	if (error == NULL)
 		return FALSE;
+
+	/* this are allowed for low-level errors */
+	if (gs_utils_error_convert_gio (error))
+		return TRUE;
+
+	/* not set */
 	error_tmp = *error;
 	if (error_tmp == NULL)
 		return FALSE;
+
+	/* already correct */
+	if (error_tmp->domain == GS_PLUGIN_ERROR)
+		return TRUE;
 
 	/* get a local version */
 	if (error_tmp->domain != PK_CLIENT_ERROR)
@@ -117,12 +127,14 @@ gs_plugin_packagekit_convert_gerror (GError **error)
 		case PK_ERROR_ENUM_PACKAGE_INSTALL_BLOCKED:
 			error_tmp->code = GS_PLUGIN_ERROR_NOT_SUPPORTED;
 			break;
-		case PK_ERROR_ENUM_CANNOT_FETCH_SOURCES:
 		case PK_ERROR_ENUM_NO_CACHE:
-		case PK_ERROR_ENUM_NO_MORE_MIRRORS_TO_TRY:
 		case PK_ERROR_ENUM_NO_NETWORK:
-		case PK_ERROR_ENUM_PACKAGE_DOWNLOAD_FAILED:
 			error_tmp->code = GS_PLUGIN_ERROR_NO_NETWORK;
+			break;
+		case PK_ERROR_ENUM_PACKAGE_DOWNLOAD_FAILED:
+		case PK_ERROR_ENUM_NO_MORE_MIRRORS_TO_TRY:
+		case PK_ERROR_ENUM_CANNOT_FETCH_SOURCES:
+			error_tmp->code = GS_PLUGIN_ERROR_DOWNLOAD_FAILED;
 			break;
 		case PK_ERROR_ENUM_BAD_GPG_SIGNATURE:
 		case PK_ERROR_ENUM_CANNOT_INSTALL_REPO_UNSIGNED:
@@ -157,7 +169,7 @@ gs_plugin_packagekit_results_valid (PkResults *results, GError **error)
 
 	/* method failed? */
 	if (results == NULL) {
-		gs_plugin_packagekit_convert_gerror (error);
+		gs_plugin_packagekit_error_convert (error);
 		return FALSE;
 	}
 
@@ -197,7 +209,7 @@ gs_plugin_packagekit_add_results (GsPlugin *plugin,
 	if (error_code != NULL) {
 		g_set_error (error,
 			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
+			     GS_PLUGIN_ERROR_INVALID_FORMAT,
 			     "failed to get-packages: %s, %s",
 			     pk_error_enum_to_string (pk_error_get_code (error_code)),
 			     pk_error_get_details (error_code));

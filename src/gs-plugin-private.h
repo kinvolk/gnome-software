@@ -34,6 +34,8 @@ G_BEGIN_DECLS
 GsPlugin	*gs_plugin_new				(void);
 GsPlugin	*gs_plugin_create			(const gchar	*filename,
 							 GError		**error);
+const gchar	*gs_plugin_error_to_string		(GsPluginError	 error);
+const gchar	*gs_plugin_action_to_string		(GsPluginAction	 action);
 
 void		 gs_plugin_action_start			(GsPlugin	*plugin,
 							 gboolean	 exclusive);
@@ -56,6 +58,8 @@ void		 gs_plugin_set_auth_array		(GsPlugin	*plugin,
 							 GPtrArray	*auth_array);
 void		 gs_plugin_set_soup_session		(GsPlugin	*plugin,
 							 SoupSession	*soup_session);
+void		 gs_plugin_set_global_cache		(GsPlugin	*plugin,
+							 GsAppList	*global_cache);
 void		 gs_plugin_set_running_other		(GsPlugin	*plugin,
 							 gboolean	 running_other);
 GPtrArray	*gs_plugin_get_rules			(GsPlugin	*plugin,

@@ -1,6 +1,7 @@
 # List of source files containing translatable strings.
 # Please keep this file sorted alphabetically.
 data/appdata/org.gnome.Software.appdata.xml.in
+data/org.gnome.software.external-appstream.policy.in
 data/org.gnome.software.gschema.xml
 [type: gettext/glade]src/gs-app-folder-dialog.ui
 [type: gettext/glade]src/gs-app-tile.ui
@@ -63,6 +64,7 @@ src/gs-update-monitor.c
 src/gs-upgrade-banner.c
 [type: gettext/glade]src/gs-upgrade-banner.ui
 src/gs-common.c
+src/gs-content-rating.c
 [type: gettext/glade]src/gs-menus.ui
 src/org.gnome.Software.desktop.in
 [type: gettext/glade]src/gs-popular-tile.ui

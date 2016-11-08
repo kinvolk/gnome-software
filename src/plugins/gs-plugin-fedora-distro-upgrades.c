@@ -31,6 +31,7 @@ struct GsPluginData {
 	GFileMonitor	*cachefn_monitor;
 	gchar		*os_name;
 	guint64		 os_version;
+	GsApp		*cached_origin;
 };
 
 void
@@ -51,6 +52,8 @@ gs_plugin_destroy (GsPlugin *plugin)
 	GsPluginData *priv = gs_plugin_get_data (plugin);
 	if (priv->cachefn_monitor != NULL)
 		g_object_unref (priv->cachefn_monitor);
+	if (priv->cached_origin != NULL)
+		g_object_unref (priv->cached_origin);
 	g_free (priv->os_name);
 	g_free (priv->cachefn);
 }
@@ -122,10 +125,23 @@ gs_plugin_setup (GsPlugin *plugin, GCancellable *cancellable, GError **error)
 	if (endptr == verstr || priv->os_version > G_MAXUINT) {
 		g_set_error (error,
 			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
+			     GS_PLUGIN_ERROR_INVALID_FORMAT,
 			     "Failed parse VERSION_ID: %s", verstr);
 		return FALSE;
 	}
+
+	/* add source */
+	priv->cached_origin = gs_app_new (gs_plugin_get_name (plugin));
+	gs_app_set_kind (priv->cached_origin, AS_APP_KIND_SOURCE);
+	gs_app_set_origin_ui (priv->cached_origin, "Fedora Project PkgDb");
+	gs_app_set_origin_hostname (priv->cached_origin,
+				    FEDORA_PKGDB_COLLECTIONS_API_URI);
+
+	/* add the source to the plugin cache which allows us to match the
+	 * unique ID to a GsApp when creating an event */
+	gs_plugin_cache_add (plugin,
+			     gs_app_get_unique_id (priv->cached_origin),
+			     priv->cached_origin);
 
 	/* success */
 	return TRUE;
@@ -151,11 +167,17 @@ gs_plugin_fedora_distro_upgrades_refresh (GsPlugin *plugin,
 	}
 
 	/* download new file */
-	return gs_plugin_download_file (plugin, NULL,
-					FEDORA_PKGDB_COLLECTIONS_API_URI,
-					priv->cachefn,
-					cancellable,
-					error);
+	if (!gs_plugin_download_file (plugin, NULL,
+				      FEDORA_PKGDB_COLLECTIONS_API_URI,
+				      priv->cachefn,
+				      cancellable,
+				      error)) {
+		gs_utils_error_add_unique_id (error, priv->cached_origin);
+		return FALSE;
+	}
+
+	/* success */
+	return TRUE;
 }
 
 gboolean
@@ -216,7 +238,7 @@ parse_pkgdb_collections_data (const gchar *data,
 	if (root == NULL) {
 		g_set_error (error,
 		             GS_PLUGIN_ERROR,
-		             GS_PLUGIN_ERROR_FAILED,
+		             GS_PLUGIN_ERROR_INVALID_FORMAT,
 		             "no root object");
 		return NULL;
 	}
@@ -225,7 +247,7 @@ parse_pkgdb_collections_data (const gchar *data,
 	if (collections == NULL) {
 		g_set_error (error,
 		             GS_PLUGIN_ERROR,
-		             GS_PLUGIN_ERROR_FAILED,
+		             GS_PLUGIN_ERROR_INVALID_FORMAT,
 		             "no collections object");
 		return NULL;
 	}
@@ -320,8 +342,10 @@ gs_plugin_add_distro_upgrades (GsPlugin *plugin,
 		return FALSE;
 
 	/* get cached file */
-	if (!g_file_get_contents (priv->cachefn, &data, &len, error))
+	if (!g_file_get_contents (priv->cachefn, &data, &len, error)) {
+		gs_utils_error_convert_gio (error);
 		return FALSE;
+	}
 
 	/* parse data */
 	settings = g_settings_new ("org.gnome.software");

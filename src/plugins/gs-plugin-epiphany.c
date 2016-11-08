@@ -63,7 +63,7 @@ _gs_app_get_id_nonfull (GsApp *app)
 	gchar *id;
 	gchar *tmp;
 
-	id = g_strdup (gs_app_get_id_no_prefix (app));
+	id = g_strdup (gs_app_get_id (app));
 	tmp = g_strrstr (id, ".desktop");
 	if (tmp != NULL)
 		*tmp = '\0';
@@ -113,7 +113,7 @@ gs_plugin_app_install (GsPlugin *plugin, GsApp *app,
 	if (icons->len == 0) {
 		g_set_error (error,
 			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
+			     GS_PLUGIN_ERROR_NOT_SUPPORTED,
 			     "no icons for %s",
 			     gs_app_get_id (app));
 		return FALSE;
@@ -130,7 +130,7 @@ gs_plugin_app_install (GsPlugin *plugin, GsApp *app,
 		} else {
 			g_set_error (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_WRITE_FAILED,
 				     "Can't symlink icon: %s",
 				     error_local->message);
 			return FALSE;
@@ -191,15 +191,17 @@ gs_plugin_app_install (GsPlugin *plugin, GsApp *app,
 	/* symlink it to somewhere the shell will notice */
 	app_desktop = g_build_filename (g_get_user_data_dir (),
 	                                "applications",
-	                                gs_app_get_id_no_prefix (app),
+	                                gs_app_get_id (app),
 	                                NULL);
 	symlink_desktop = g_file_new_for_path (app_desktop);
 	ret = g_file_make_symbolic_link (symlink_desktop,
 					 epi_desktop,
 					 NULL,
 					 error);
-	if (!ret)
+	if (!ret) {
+		gs_utils_error_convert_gio (error);
 		return FALSE;
+	}
 
 	/* update state */
 	gs_app_set_state (app, AS_APP_STATE_INSTALLING);
@@ -231,11 +233,13 @@ gs_plugin_app_remove (GsPlugin *plugin, GsApp *app,
 	/* remove the shared desktop file */
 	app_desktop = g_build_filename (g_get_user_data_dir (),
 	                                "applications",
-	                                gs_app_get_id_no_prefix (app),
+	                                gs_app_get_id (app),
 	                                NULL);
 	file_app = g_file_new_for_path (app_desktop);
-	if (!g_file_delete (file_app, NULL, error))
+	if (!g_file_delete (file_app, NULL, error)) {
+		gs_utils_error_convert_gio (error);
 		return FALSE;
+	}
 	gs_app_set_state (app, AS_APP_STATE_AVAILABLE);
 	return TRUE;
 }
@@ -266,7 +270,7 @@ gs_plugin_refine_app (GsPlugin *plugin,
 	if (name == NULL) {
 		g_set_error (error,
 			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
+			     GS_PLUGIN_ERROR_INVALID_FORMAT,
 			     "name unset for %s",
 			     gs_app_get_id (app));
 		return FALSE;

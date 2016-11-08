@@ -38,6 +38,7 @@ struct _GsUpdateMonitor {
 	GCancellable    *cancellable;
 	GSettings	*settings;
 	GsPluginLoader	*plugin_loader;
+	GDBusProxy	*proxy_upower;
 	GError		*last_offline_error;
 
 	guint		 cleanup_notifications_id;	/* at startup */
@@ -164,7 +165,7 @@ get_updates_finished_cb (GObject *object,
 	/* get result */
 	apps = gs_plugin_loader_get_updates_finish (GS_PLUGIN_LOADER (object), res, &error);
 	if (apps == NULL) {
-		if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+		if (!g_error_matches (error, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_CANCELLED))
 			g_warning ("failed to get updates: %s", error->message);
 		return;
 	}
@@ -200,6 +201,31 @@ get_updates_finished_cb (GObject *object,
 	}
 }
 
+static gboolean
+should_show_upgrade_notification (GsUpdateMonitor *monitor)
+{
+	GTimeSpan d;
+	gint64 tmp;
+	g_autoptr(GDateTime) now = NULL;
+	g_autoptr(GDateTime) then = NULL;
+
+	g_settings_get (monitor->settings, "upgrade-notification-timestamp", "x", &tmp);
+	if (tmp == 0)
+		return TRUE;
+	then = g_date_time_new_from_unix_local (tmp);
+	if (then == NULL) {
+		g_warning ("failed to parse timestamp %" G_GINT64_FORMAT, tmp);
+		return TRUE;
+	}
+
+	now = g_date_time_new_now_local ();
+	d = g_date_time_difference (now, then);
+	if (d >= 30 * G_TIME_SPAN_DAY)
+		return TRUE;
+
+	return FALSE;
+}
+
 static void
 get_upgrades_finished_cb (GObject *object,
 			  GAsyncResult *res,
@@ -215,7 +241,7 @@ get_upgrades_finished_cb (GObject *object,
 	/* get result */
 	apps = gs_plugin_loader_get_distro_upgrades_finish (GS_PLUGIN_LOADER (object), res, &error);
 	if (apps == NULL) {
-		if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+		if (!g_error_matches (error, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_CANCELLED)) {
 			g_warning ("failed to get upgrades: %s",
 				   error->message);
 		}
@@ -232,6 +258,10 @@ get_upgrades_finished_cb (GObject *object,
 
 	/* do not show if gnome-software is already open */
 	if (gs_application_has_active_window (GS_APPLICATION (monitor->application)))
+		return;
+
+	/* only nag about upgrades once per month */
+	if (!should_show_upgrade_notification (monitor))
 		return;
 
 	/* just get the first result : FIXME, do we sort these by date? */
@@ -286,28 +316,63 @@ refresh_cache_finished_cb (GObject *object,
 	g_autoptr(GError) error = NULL;
 
 	if (!gs_plugin_loader_refresh_finish (GS_PLUGIN_LOADER (object), res, &error)) {
-		if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+		if (!g_error_matches (error, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_CANCELLED))
 			g_warning ("failed to refresh the cache: %s", error->message);
 		return;
 	}
-	get_updates (monitor);
+	if (gs_plugin_loader_get_allow_updates (monitor->plugin_loader))
+		get_updates (monitor);
 }
+
+typedef enum {
+	UP_DEVICE_LEVEL_UNKNOWN,
+	UP_DEVICE_LEVEL_NONE,
+	UP_DEVICE_LEVEL_DISCHARGING,
+	UP_DEVICE_LEVEL_LOW,
+	UP_DEVICE_LEVEL_CRITICAL,
+	UP_DEVICE_LEVEL_ACTION,
+	UP_DEVICE_LEVEL_LAST
+} UpDeviceLevel;
 
 static void
 check_updates (GsUpdateMonitor *monitor)
 {
 	gint64 tmp;
+	gboolean refresh_on_metered;
 	g_autoptr(GDateTime) last_refreshed = NULL;
 	g_autoptr(GDateTime) now_refreshed = NULL;
+	GsPluginRefreshFlags refresh_flags = GS_PLUGIN_REFRESH_FLAGS_METADATA;
 
 	/* we don't know the network state */
 	if (monitor->network_monitor == NULL)
 		return;
 
-	/* never refresh when offline or on mobile connections */
-	if (!g_network_monitor_get_network_available (monitor->network_monitor) ||
+	/* never check for updates when offline */
+	if (!g_network_monitor_get_network_available (monitor->network_monitor))
+		return;
+
+	refresh_on_metered = g_settings_get_boolean (monitor->settings,
+						     "refresh-when-metered");
+
+	if (!refresh_on_metered &&
 	    g_network_monitor_get_network_metered (monitor->network_monitor))
 		return;
+
+	/* never refresh when the battery is low */
+	if (monitor->proxy_upower != NULL) {
+		g_autoptr(GVariant) val = NULL;
+		val = g_dbus_proxy_get_cached_property (monitor->proxy_upower,
+							"WarningLevel");
+		if (val != NULL) {
+			guint32 level = g_variant_get_uint32 (val);
+			if (level >= UP_DEVICE_LEVEL_LOW) {
+				g_debug ("not getting updates on low power");
+				return;
+			}
+		}
+	} else {
+		g_debug ("no UPower support, so not doing power level checks");
+	}
 
 	g_settings_get (monitor->settings, "check-timestamp", "x", &tmp);
 	last_refreshed = g_date_time_new_from_unix_local (tmp);
@@ -339,14 +404,17 @@ check_updates (GsUpdateMonitor *monitor)
 	g_settings_set (monitor->settings, "check-timestamp", "x",
 			g_date_time_to_unix (now_refreshed));
 
-	/* NOTE: this doesn't actually refresh the cache, it actually just checks
-	 * for updates (which might happen to also refresh the cache as a side
-	 * effect) and then downloads new packages */
-	g_debug ("Refreshing cache");
+	if (gs_plugin_loader_get_allow_updates (monitor->plugin_loader) &&
+	    g_settings_get_boolean (monitor->settings, "download-updates")) {
+		g_debug ("Refreshing for metadata and payload");
+		refresh_flags |= GS_PLUGIN_REFRESH_FLAGS_PAYLOAD;
+	} else {
+		g_debug ("Refreshing for metadata only");
+	}
+
 	gs_plugin_loader_refresh_async (monitor->plugin_loader,
 					60 * 60 * 24,
-					GS_PLUGIN_REFRESH_FLAGS_METADATA |
-					GS_PLUGIN_REFRESH_FLAGS_PAYLOAD,
+					refresh_flags,
 					monitor->cancellable,
 					refresh_cache_finished_cb,
 					monitor);
@@ -374,22 +442,69 @@ check_thrice_daily_cb (gpointer data)
 	return G_SOURCE_CONTINUE;
 }
 
+static void
+stop_upgrades_check (GsUpdateMonitor *monitor)
+{
+	if (monitor->check_daily_id == 0)
+		return;
+
+	g_source_remove (monitor->check_daily_id);
+	monitor->check_daily_id = 0;
+}
+
+static void
+restart_upgrades_check (GsUpdateMonitor *monitor)
+{
+	stop_upgrades_check (monitor);
+	get_upgrades (monitor);
+
+	monitor->check_daily_id = g_timeout_add_seconds (3 * 86400,
+							 check_thrice_daily_cb,
+							 monitor);
+}
+
+static void
+stop_updates_check (GsUpdateMonitor *monitor)
+{
+	if (monitor->check_hourly_id == 0)
+		return;
+
+	g_source_remove (monitor->check_hourly_id);
+	monitor->check_hourly_id = 0;
+}
+
+static void
+restart_updates_check (GsUpdateMonitor *monitor)
+{
+	stop_updates_check (monitor);
+	check_updates (monitor);
+
+	monitor->check_hourly_id = g_timeout_add_seconds (3600, check_hourly_cb,
+							  monitor);
+}
+
 static gboolean
 check_updates_on_startup_cb (gpointer data)
 {
 	GsUpdateMonitor *monitor = data;
 
 	g_debug ("First hourly updates check");
-	check_updates (monitor);
-	get_upgrades (monitor);
+	restart_updates_check (monitor);
 
-	monitor->check_hourly_id =
-		g_timeout_add_seconds (3600, check_hourly_cb, monitor);
-	monitor->check_daily_id =
-		g_timeout_add_seconds (3 * 86400, check_thrice_daily_cb, monitor);
+	if (gs_plugin_loader_get_allow_updates (monitor->plugin_loader))
+		restart_upgrades_check (monitor);
 
 	monitor->check_startup_id = 0;
 	return G_SOURCE_REMOVE;
+}
+
+static void
+check_updates_upower_changed_cb (GDBusProxy *proxy,
+				 GParamSpec *pspec,
+				 GsUpdateMonitor *monitor)
+{
+	g_debug ("upower changed updates check");
+	check_updates (monitor);
 }
 
 static void
@@ -562,8 +677,24 @@ gs_update_monitor_show_error (GsUpdateMonitor *monitor, GsShell *shell)
 }
 
 static void
+allow_updates_notify_cb (GsPluginLoader *plugin_loader,
+			 GParamSpec *pspec,
+			 GsUpdateMonitor *monitor)
+{
+	if (gs_plugin_loader_get_allow_updates (plugin_loader)) {
+		/* We restart the updates check here to avoid the user
+		 * pontentially waiting for the hourly check */
+		restart_updates_check (monitor);
+		restart_upgrades_check (monitor);
+	} else {
+		stop_upgrades_check (monitor);
+	}
+}
+
+static void
 gs_update_monitor_init (GsUpdateMonitor *monitor)
 {
+	g_autoptr(GError) error = NULL;
 	monitor->settings = g_settings_new ("org.gnome.software");
 
 	/* cleanup at startup */
@@ -580,6 +711,23 @@ gs_update_monitor_init (GsUpdateMonitor *monitor)
 		g_signal_connect (monitor->network_monitor, "network-changed",
 				  G_CALLBACK (notify_network_state_cb), monitor);
 	}
+
+	/* connect to UPower to get the system power state */
+	monitor->proxy_upower = g_dbus_proxy_new_for_bus_sync (G_BUS_TYPE_SYSTEM,
+					G_DBUS_PROXY_FLAGS_NONE,
+					NULL,
+					"org.freedesktop.UPower",
+					"/org/freedesktop/UPower/devices/DisplayDevice",
+					"org.freedesktop.UPower.Device",
+					NULL,
+					&error);
+	if (monitor->proxy_upower != NULL) {
+		g_signal_connect (monitor->proxy_upower, "notify",
+				  G_CALLBACK (check_updates_upower_changed_cb),
+				  monitor);
+	} else {
+		g_warning ("failed to connect to upower: %s", error->message);
+	}
 }
 
 static void
@@ -591,14 +739,10 @@ gs_update_monitor_dispose (GObject *object)
 		g_cancellable_cancel (monitor->cancellable);
 		g_clear_object (&monitor->cancellable);
 	}
-	if (monitor->check_hourly_id != 0) {
-		g_source_remove (monitor->check_hourly_id);
-		monitor->check_hourly_id = 0;
-	}
-	if (monitor->check_daily_id != 0) {
-		g_source_remove (monitor->check_daily_id);
-		monitor->check_daily_id = 0;
-	}
+
+	stop_updates_check (monitor);
+	stop_upgrades_check (monitor);
+
 	if (monitor->check_startup_id != 0) {
 		g_source_remove (monitor->check_startup_id);
 		monitor->check_startup_id = 0;
@@ -624,6 +768,7 @@ gs_update_monitor_dispose (GObject *object)
 		monitor->plugin_loader = NULL;
 	}
 	g_clear_object (&monitor->settings);
+	g_clear_object (&monitor->proxy_upower);
 
 	G_OBJECT_CLASS (gs_update_monitor_parent_class)->dispose (object);
 }
@@ -659,34 +804,10 @@ gs_update_monitor_new (GsApplication *application)
 	monitor->plugin_loader = gs_application_get_plugin_loader (application);
 	g_signal_connect (monitor->plugin_loader, "updates-changed",
 			  G_CALLBACK (updates_changed_cb), monitor);
+	g_signal_connect (monitor->plugin_loader, "notify::allow-updates",
+			  G_CALLBACK (allow_updates_notify_cb), monitor);
 
 	return monitor;
-}
-
-GPermission *
-gs_update_monitor_permission_get (void)
-{
-	static GPermission *permission = NULL;
-#ifdef HAVE_PACKAGEKIT
-	if (permission == NULL)
-		permission = gs_utils_get_permission ("org.freedesktop.packagekit.trigger-offline-update");
-#endif
-	return permission;
-}
-
-gboolean
-gs_update_monitor_is_managed (void)
-{
-	GPermission *permission;
-	gboolean managed;
-
-	permission = gs_update_monitor_permission_get ();
-	if (permission == NULL)
-		return FALSE;
-	managed = !g_permission_get_allowed (permission) &&
-                  !g_permission_get_can_acquire (permission);
-
-	return managed;
 }
 
 /* vim: set noexpandtab: */

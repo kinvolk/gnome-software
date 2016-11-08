@@ -41,7 +41,6 @@
 #include "gs-app-list.h"
 #include "gs-category.h"
 #include "gs-price.h"
-#include "gs-payment-method.h"
 
 G_BEGIN_DECLS
 
@@ -157,7 +156,7 @@ gboolean	 gs_plugin_add_search_what_provides	(GsPlugin	*plugin,
  * lock held.
  *
  * All functions can block, but should sent progress notifications, e.g. using
- * gs_plugin_progress_update() if they will take more than tens of milliseconds
+ * gs_app_set_progress() if they will take more than tens of milliseconds
  * to complete.
  *
  * This function will also not be called if gs_plugin_initialize() self-disabled.
@@ -204,6 +203,27 @@ gboolean	 gs_plugin_add_installed		(GsPlugin	*plugin,
  * Returns: %TRUE for success or if not relevant
  **/
 gboolean	 gs_plugin_add_updates			(GsPlugin	*plugin,
+							 GsAppList	*list,
+							 GCancellable	*cancellable,
+							 GError		**error);
+
+/**
+ * gs_plugin_add_updates_pending:
+ * @plugin: a #GsPlugin
+ * @list: a #GsAppList
+ * @cancellable: a #GCancellable, or %NULL
+ * @error: a #GError, or %NULL
+ *
+ * Get the list of not-yet-downloaded updates, with the write lock held.
+ *
+ * NOTE: Actually downloading the updates is normally done in
+ * gs_plugin_refresh() when called with %GS_PLUGIN_REFRESH_FLAGS_PAYLOAD.
+ *
+ * Plugins are expected to add new apps using gs_app_list_add().
+ *
+ * Returns: %TRUE for success or if not relevant
+ **/
+gboolean	 gs_plugin_add_updates_pending		(GsPlugin	*plugin,
 							 GsAppList	*list,
 							 GCancellable	*cancellable,
 							 GError		**error);
@@ -431,6 +451,30 @@ gboolean	 gs_plugin_refine_app			(GsPlugin	*plugin,
 							 GError		**error);
 
 /**
+ * gs_plugin_refine_wildcard:
+ * @plugin: a #GsPlugin
+ * @app: a #GsApp
+ * @list: a #GsAppList
+ * @flags: a #GsPluginRefineFlags, e.g. %GS_PLUGIN_REFINE_FLAGS_REQUIRE_LICENSE
+ * @cancellable: a #GCancellable, or %NULL
+ * @error: a #GError, or %NULL
+ *
+ * Adds applications that match the wildcard specified in @app.
+ *
+ * The general idea is that plugins create and add *new* applications rather
+ * than all trying to fight over the wildcard application.
+ * This allows the plugin loader to filter using the #GsApp priority value.
+ *
+ * Returns: %TRUE for success or if not relevant
+ **/
+gboolean	 gs_plugin_refine_wildcard		(GsPlugin	*plugin,
+							 GsApp		*app,
+							 GsAppList	*list,
+							 GsPluginRefineFlags flags,
+							 GCancellable	*cancellable,
+							 GError		**error);
+
+/**
  * gs_plugin_launch:
  * @plugin: a #GsPlugin
  * @app: a #GsApp
@@ -499,27 +543,10 @@ gboolean	 gs_plugin_update_cancel		(GsPlugin	*plugin,
 							 GError		**error);
 
 /**
- * gs_plugin_add_payment_methods:
- * @plugin: a #GsPlugin
- * @payment_methods: (element-type GsPaymentMethod): a #GPtrArray
- * @cancellable: a #GCancellable, or %NULL
- * @error: a #GError, or %NULL
- *
- * Get the available payment methods for purchasing apps.
- *
- * Returns: %TRUE for success or if not relevant
- **/
-gboolean	 gs_plugin_add_payment_methods		(GsPlugin		*plugin,
-							 GPtrArray		*payment_methods,
-							 GCancellable		*cancellable,
-							 GError			**error);
-
-/**
  * gs_plugin_app_purchase:
  * @plugin: a #GsPlugin
  * @app: a #GsApp
  * @price: a #GsPrice
- * @payment_method: (allow-none): a #GsPaymentMethod, or %NULL
  * @cancellable: a #GCancellable, or %NULL
  * @error: a #GError, or %NULL
  *
@@ -533,7 +560,6 @@ gboolean	 gs_plugin_add_payment_methods		(GsPlugin		*plugin,
 gboolean	 gs_plugin_app_purchase			(GsPlugin		*plugin,
 							 GsApp			*app,
 							 GsPrice		*price,
-							 GsPaymentMethod	*payment_method,
 							 GCancellable		*cancellable,
 							 GError			**error);
 
@@ -547,15 +573,14 @@ gboolean	 gs_plugin_app_purchase			(GsPlugin		*plugin,
  * Install the application.
  *
  * Plugins are expected to send progress notifications to the UI using
- * gs_plugin_progress_update() using the passed in @app.
+ * gs_app_set_progress() using the passed in @app.
  *
  * All functions can block, but should sent progress notifications, e.g. using
- * gs_plugin_progress_update() if they will take more than tens of milliseconds
+ * gs_app_set_progress() if they will take more than tens of milliseconds
  * to complete.
  *
  * On failure the error message returned will usually only be shown on the
- * console, but it may also be retained on the #GsApp object.
- * The UI code can retrieve the error using gs_app_get_last_error().
+ * console, but they can also be retrieved using gs_plugin_loader_get_events().
  *
  * NOTE: Once the action is complete, the plugin must set the new state of @app
  * to %AS_APP_STATE_INSTALLED.
@@ -577,15 +602,14 @@ gboolean	 gs_plugin_app_install			(GsPlugin	*plugin,
  * Remove the application.
  *
  * Plugins are expected to send progress notifications to the UI using
- * gs_plugin_progress_update() using the passed in @app.
+ * gs_app_set_progress() using the passed in @app.
  *
  * All functions can block, but should sent progress notifications, e.g. using
- * gs_plugin_progress_update() if they will take more than tens of milliseconds
+ * gs_app_set_progress() if they will take more than tens of milliseconds
  * to complete.
  *
  * On failure the error message returned will usually only be shown on the
- * console, but it may also be retained on the #GsApp object.
- * The UI code can retrieve the error using gs_app_get_last_error().
+ * console, but they can also be retrieved using gs_plugin_loader_get_events().
  *
  * NOTE: Once the action is complete, the plugin must set the new state of @app
  * to %AS_APP_STATE_AVAILABLE or %AS_APP_STATE_UNKNOWN if not known.
@@ -625,15 +649,14 @@ gboolean	 gs_plugin_app_set_rating		(GsPlugin	*plugin,
  * Update the application live.
  *
  * Plugins are expected to send progress notifications to the UI using
- * gs_plugin_progress_update() using the passed in @app.
+ * gs_app_set_progress() using the passed in @app.
  *
  * All functions can block, but should sent progress notifications, e.g. using
- * gs_plugin_progress_update() if they will take more than tens of milliseconds
+ * gs_app_set_progress() if they will take more than tens of milliseconds
  * to complete.
  *
  * On failure the error message returned will usually only be shown on the
- * console, but it may also be retained on the #GsApp object.
- * The UI code can retrieve the error using gs_app_get_last_error().
+ * console, but they can also be retrieved using gs_plugin_loader_get_events().
  *
  * NOTE: Once the action is complete, the plugin must set the new state of @app
  * to %AS_APP_STATE_INSTALLED or %AS_APP_STATE_UNKNOWN if not known.
@@ -655,7 +678,7 @@ gboolean	 gs_plugin_update_app			(GsPlugin	*plugin,
  * Starts downloading a distribution upgrade in the background.
  *
  * All functions can block, but should sent progress notifications, e.g. using
- * gs_plugin_progress_update() if they will take more than tens of milliseconds
+ * gs_app_set_progress() if they will take more than tens of milliseconds
  * to complete.
  *
  * Returns: %TRUE for success or if not relevant
@@ -816,7 +839,7 @@ gboolean	 gs_plugin_review_dismiss		(GsPlugin	*plugin,
  * This is used to pre-download package updates and firmware.
  *
  * All functions can block, but should sent progress notifications, e.g. using
- * gs_plugin_progress_update() if they will take more than tens of milliseconds
+ * gs_app_set_progress() if they will take more than tens of milliseconds
  * to complete.
  *
  * Returns: %TRUE for success or if not relevant

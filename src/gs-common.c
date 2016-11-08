@@ -132,9 +132,15 @@ gs_app_notify_installed (GsApp *app)
 	g_autofree gchar *summary = NULL;
 	g_autoptr(GNotification) n = NULL;
 
-	/* TRANSLATORS: this is the summary of a notification that an application
-	 * has been successfully installed */
-	summary = g_strdup_printf (_("%s is now installed"), gs_app_get_name (app));
+	if (gs_app_get_kind (app) == AS_APP_KIND_OS_UPDATE) {
+		/* TRANSLATORS: this is the summary of a notification that OS updates
+		 * have been successfully installed */
+		summary = g_strdup (_("OS updates are now installed"));
+	} else {
+		/* TRANSLATORS: this is the summary of a notification that an application
+		 * has been successfully installed */
+		summary = g_strdup_printf (_("%s is now installed"), gs_app_get_name (app));
+	}
 	n = g_notification_new (summary);
 	if (gs_app_get_kind (app) == AS_APP_KIND_DESKTOP) {
 		/* TRANSLATORS: this is button that opens the newly installed application */
@@ -143,80 +149,8 @@ gs_app_notify_installed (GsApp *app)
 						       gs_app_get_id (app));
 	}
 	g_notification_set_default_action_and_target  (n, "app.details", "(ss)",
-						       gs_app_get_id (app), "");
+						       gs_app_get_unique_id (app), "");
 	g_application_send_notification (g_application_get_default (), "installed", n);
-}
-
-void
-gs_app_notify_failed_modal (GsApp *app,
-			    GtkWindow *parent_window,
-			    GsPluginLoaderAction action,
-			    const GError *error)
-{
-	const gchar *title;
-	gboolean show_detailed_error;
-	g_autoptr(GString) msg = NULL;
-
-	/* TRANSLATORS: install or removed failed */
-	title = _("Sorry, this did not work");
-
-	/* say what we tried to do */
-	msg = g_string_new ("");
-	switch (action) {
-	case GS_PLUGIN_LOADER_ACTION_INSTALL:
-		/* TRANSLATORS: this is when the install fails */
-		g_string_append_printf (msg, _("Installation of %s failed."),
-					gs_app_get_name (app));
-		break;
-	case GS_PLUGIN_LOADER_ACTION_REMOVE:
-		/* TRANSLATORS: this is when the remove fails */
-		g_string_append_printf (msg, _("Removal of %s failed."),
-					gs_app_get_name (app));
-		break;
-	case GS_PLUGIN_LOADER_ACTION_UPGRADE_DOWNLOAD:
-	{
-		g_autofree gchar *name_version = g_strdup_printf ("%s %s",
-		                                                  gs_app_get_name (app),
-		                                                  gs_app_get_version (app));
-		/* TRANSLATORS: this is when the upgrade download fails */
-		g_string_append_printf (msg, _("Upgrade to %s failed."), name_version);
-		break;
-	}
-	default:
-		g_assert_not_reached ();
-		break;
-	}
-	g_string_append (msg, " ");
-
-	/* give details about the error */
-	switch (error->code) {
-	case GS_PLUGIN_ERROR_NO_NETWORK:
-		/* TRANSLATORS: the package manager needed to download
-		 * something with no network available */
-		g_string_append (msg, _("Internet access was required but wasn’t available."));
-		g_string_append (msg, " ");
-		/* TRANSLATORS: plug in the network cable... */
-		g_string_append (msg, _("Please make sure that you have internet access and try again."));
-		show_detailed_error = FALSE;
-		break;
-	case GS_PLUGIN_ERROR_NO_SPACE:
-		/* TRANSLATORS: we ran out of disk space */
-		g_string_append (msg, _("There wasn’t enough disk space."));
-		g_string_append (msg, " ");
-		/* TRANSLATORS: delete some stuff! */
-		g_string_append (msg, _("Please free up some space and try again."));
-		show_detailed_error = FALSE;
-		break;
-	default:
-		/* TRANSLATORS: we didn't handle the error type */
-		g_string_append (msg, _("If the problem persists, contact your software provider."));
-		show_detailed_error = TRUE;
-	}
-
-	gs_utils_show_error_dialog (parent_window,
-	                            title,
-	                            msg->str,
-	                            show_detailed_error ? error->message : NULL);
 }
 
 typedef enum {
@@ -334,7 +268,7 @@ gs_app_notify_unavailable (GsApp *app, GtkWindow *parent)
 
 	gtk_message_dialog_format_secondary_markup (GTK_MESSAGE_DIALOG (dialog), "%s", body->str);
 	/* TRANSLATORS: this is button text to not ask about non-free content again */
-	if (0) gtk_dialog_add_button (GTK_DIALOG (dialog), _("Don't Warn Again"), GTK_RESPONSE_YES);
+	if (0) gtk_dialog_add_button (GTK_DIALOG (dialog), _("Don’t Warn Again"), GTK_RESPONSE_YES);
 	if (already_enabled) {
 		gtk_dialog_add_button (GTK_DIALOG (dialog),
 				       /* TRANSLATORS: button text */
@@ -381,225 +315,6 @@ gs_image_set_from_pixbuf (GtkImage *image, const GdkPixbuf *pixbuf)
 	gint scale;
 	scale = gdk_pixbuf_get_width (pixbuf) / 64;
 	gs_image_set_from_pixbuf_with_scale (image, pixbuf, scale);
-}
-
-/**
- * gs_utils_get_content_rating:
- *
- * Note: These are strings marked for translation for comment.
- * This functionality is not currently used.
- **/
-const gchar *
-gs_utils_get_content_rating (void)
-{
-	struct {
-		const gchar		*id;
-		AsContentRatingValue	 value;
-		const gchar		*desc;
-	} content_rating_oars[] =  {
-	{ "violence-cartoon",	AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating violence-cartoon", "None") },
-	{ "violence-cartoon",	AS_CONTENT_RATING_VALUE_MILD,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Cartoon characters in unsafe situations") },
-	{ "violence-cartoon",	AS_CONTENT_RATING_VALUE_MODERATE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Cartoon characters in aggressive conflict") },
-	{ "violence-cartoon",	AS_CONTENT_RATING_VALUE_INTENSE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Graphic violence involving cartoon characters") },
-	{ "violence-fantasy",	AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating violence-fantasy", "None") },
-	{ "violence-fantasy",	AS_CONTENT_RATING_VALUE_MILD,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Characters in unsafe situations easily distinguishable from reality") },
-	{ "violence-fantasy",	AS_CONTENT_RATING_VALUE_MODERATE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Characters in aggressive conflict easily distinguishable from reality") },
-	{ "violence-fantasy",	AS_CONTENT_RATING_VALUE_INTENSE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Graphic violence easily distinguishable from reality") },
-	{ "violence-realistic",	AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating violence-realistic", "None") },
-	{ "violence-realistic",	AS_CONTENT_RATING_VALUE_MILD,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Mild realistic characters in unsafe situations") },
-	{ "violence-realistic",	AS_CONTENT_RATING_VALUE_MODERATE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Depictions of realistic characters in aggressive conflict") },
-	{ "violence-realistic",	AS_CONTENT_RATING_VALUE_INTENSE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Graphic violence involving realistic characters") },
-	{ "violence-bloodshed",	AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating violence-bloodshed", "None") },
-	{ "violence-bloodshed",	AS_CONTENT_RATING_VALUE_MILD,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Unrealistic bloodshed") },
-	{ "violence-bloodshed",	AS_CONTENT_RATING_VALUE_MODERATE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Realistic bloodshed") },
-	{ "violence-bloodshed",	AS_CONTENT_RATING_VALUE_INTENSE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Depictions of bloodshed and the mutilation of body parts") },
-	{ "violence-sexual",	AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating violence-sexual", "None") },
-	{ "violence-sexual",	AS_CONTENT_RATING_VALUE_INTENSE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Rape or other violent sexual behavior") },
-	{ "drugs-alcohol",	AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating drugs-alcohol", "None") },
-	{ "drugs-alcohol",	AS_CONTENT_RATING_VALUE_MILD,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("References to alcoholic beverages") },
-	{ "drugs-alcohol",	AS_CONTENT_RATING_VALUE_MODERATE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Use of alcoholic beverages") },
-	{ "drugs-narcotics",	AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating drugs-narcotics", "None") },
-	{ "drugs-narcotics",	AS_CONTENT_RATING_VALUE_MILD,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("References to illicit drugs") },
-	{ "drugs-narcotics",	AS_CONTENT_RATING_VALUE_MODERATE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Use of illicit drugs") },
-	{ "drugs-tobacco",	AS_CONTENT_RATING_VALUE_MILD,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("References to tobacco products") },
-	{ "drugs-tobacco",	AS_CONTENT_RATING_VALUE_MODERATE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Use of tobacco products") },
-	{ "sex-nudity",		AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating sex-nudity", "None") },
-	{ "sex-nudity",		AS_CONTENT_RATING_VALUE_MILD,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Brief artistic nudity") },
-	{ "sex-nudity",		AS_CONTENT_RATING_VALUE_MODERATE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Prolonged nudity") },
-	{ "sex-themes",		AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating sex-themes", "None") },
-	{ "sex-themes",		AS_CONTENT_RATING_VALUE_MILD,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Provocative references or depictions") },
-	{ "sex-themes",		AS_CONTENT_RATING_VALUE_MODERATE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Sexual references or depictions") },
-	{ "sex-themes",		AS_CONTENT_RATING_VALUE_INTENSE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Graphic sexual behavior") },
-	{ "language-profanity",	AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating language-profanity", "None") },
-	{ "language-profanity",	AS_CONTENT_RATING_VALUE_MILD,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Mild or infrequent use of profanity") },
-	{ "language-profanity",	AS_CONTENT_RATING_VALUE_MODERATE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Moderate use of profanity") },
-	{ "language-profanity",	AS_CONTENT_RATING_VALUE_INTENSE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Strong or frequent use of profanity") },
-	{ "language-humor",	AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating language-humor", "None") },
-	{ "language-humor",	AS_CONTENT_RATING_VALUE_MILD,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Slapstick humor") },
-	{ "language-humor",	AS_CONTENT_RATING_VALUE_MODERATE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Vulgar or bathroom humor") },
-	{ "language-humor",	AS_CONTENT_RATING_VALUE_INTENSE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Mature or sexual humor") },
-	{ "language-discrimination", AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating language-discrimination", "None") },
-	{ "language-discrimination", AS_CONTENT_RATING_VALUE_MILD,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Negativity towards a specific group of people") },
-	{ "language-discrimination", AS_CONTENT_RATING_VALUE_MODERATE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Discrimation designed to cause emotional harm") },
-	{ "language-discrimination", AS_CONTENT_RATING_VALUE_INTENSE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Explicit discrimination based on gender, sexuality, race or religion") },
-	{ "money-advertising", AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating money-advertising", "None") },
-	{ "money-advertising", AS_CONTENT_RATING_VALUE_MILD,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Product placement") },
-	{ "money-advertising", AS_CONTENT_RATING_VALUE_MODERATE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Explicit references to specific brands or trademarked products") },
-	{ "money-advertising", AS_CONTENT_RATING_VALUE_INTENSE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Players are encouraged to purchase specific real-world items") },
-	{ "money-gambling",	AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating money-gambling", "None") },
-	{ "money-gambling",	AS_CONTENT_RATING_VALUE_MILD,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Gambling on random events using tokens or credits") },
-	{ "money-gambling",	AS_CONTENT_RATING_VALUE_MODERATE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Gambling using \"play\" money") },
-	{ "money-gambling",	AS_CONTENT_RATING_VALUE_INTENSE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Gambling using real money") },
-	{ "money-purchasing",	AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating money-purchasing", "None") },
-	{ "money-purchasing",	AS_CONTENT_RATING_VALUE_INTENSE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Ability to spend real money in-game") },
-	{ "social-chat",	AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating social-chat", "None") },
-	{ "social-chat",	AS_CONTENT_RATING_VALUE_MILD,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Player-to-player game interactions without chat functionality") },
-	{ "social-chat",	AS_CONTENT_RATING_VALUE_MODERATE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Player-to-player preset interactions without chat functionality") },
-	{ "social-chat",	AS_CONTENT_RATING_VALUE_INTENSE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Uncontrolled chat functionality between players") },
-	{ "social-audio",	AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating social-audio", "None") },
-	{ "social-audio",	AS_CONTENT_RATING_VALUE_INTENSE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Uncontrolled audio or video chat functionality between players") },
-	{ "social-contacts",	AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating social-contacts", "None") },
-	{ "social-contacts",	AS_CONTENT_RATING_VALUE_INTENSE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Sharing social network usernames or email addresses") },
-	{ "social-info",	AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating social-info", "None") },
-	{ "social-info",	AS_CONTENT_RATING_VALUE_INTENSE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Sharing user information with 3rd parties") },
-	{ "social-location",	AS_CONTENT_RATING_VALUE_NONE,
-	/* TRANSLATORS: content rating description */
-	C_("content rating social-location", "None") },
-	{ "social-location",	AS_CONTENT_RATING_VALUE_INTENSE,
-	/* TRANSLATORS: content rating description: comments welcome */
-	_("Sharing physical location to other users") },
-	{ NULL, 0, NULL } };
-	return content_rating_oars[0].desc;
 }
 
 gboolean
@@ -658,9 +373,16 @@ void
 gs_utils_widget_set_css_simple (GtkWidget *widget, const gchar *css)
 {
 	g_autofree gchar *class_name = NULL;
-	g_autoptr(GString) str = g_string_sized_new (1024);
+	g_autoptr(GString) str = NULL;
 
+	/* remove custom class if NULL */
 	class_name = g_strdup_printf ("themed-widget_%p", widget);
+	if (css == NULL) {
+		GtkStyleContext *context = gtk_widget_get_style_context (widget);
+		gtk_style_context_remove_class (context, class_name);
+		return;
+	}
+	str = g_string_sized_new (1024);
 	g_string_append_printf (str, ".%s {\n", class_name);
 	g_string_append_printf (str, "%s\n", css);
 	g_string_append (str, "}");
@@ -909,6 +631,77 @@ gs_utils_get_error_value (const GError *error)
 	if (str == NULL)
 		return NULL;
 	return (const gchar *) str + 1;
+}
+
+/**
+ * gs_utils_build_unique_id_kind:
+ * @kind: A #AsAppKind
+ * @id: An application ID
+ *
+ * Converts the ID valid into a wildcard unique ID of a specific kind.
+ * If @id is already a unique ID, then it is returned unchanged.
+ *
+ * Returns: (transfer full): a unique ID, or %NULL
+ */
+gchar *
+gs_utils_build_unique_id_kind (AsAppKind kind, const gchar *id)
+{
+	if (as_utils_unique_id_valid (id))
+		return g_strdup (id);
+	return as_utils_unique_id_build (AS_APP_SCOPE_UNKNOWN,
+					 AS_BUNDLE_KIND_UNKNOWN,
+					 NULL,
+					 kind,
+					 id,
+					 NULL);
+}
+
+/**
+ * gs_utils_list_has_app_fuzzy:
+ * @list: A #GsAppList
+ * @app: A #GsApp
+ *
+ * Finds out if any application in the list would match a given application,
+ * where the match is valid for a matching D-Bus bus name,
+ * the label in the UI or the same icon.
+ *
+ * This function is normally used to work out if the source should be shown
+ * in a GsAppRow.
+ *
+ * Returns: %TRUE if the app is visually the "same"
+ */
+gboolean
+gs_utils_list_has_app_fuzzy (GsAppList *list, GsApp *app)
+{
+	guint i;
+	GsApp *tmp;
+
+	for (i = 0; i < gs_app_list_length (list); i++) {
+		tmp = gs_app_list_index (list, i);
+
+		/* ignore if the same object */
+		if (app == tmp)
+			continue;
+
+		/* ignore with the same source */
+		if (g_strcmp0 (gs_app_get_origin_hostname (tmp),
+			       gs_app_get_origin_hostname (app)) == 0) {
+			continue;
+		}
+
+		/* same D-Bus ID */
+		if (g_strcmp0 (gs_app_get_id (tmp),
+			       gs_app_get_id (app)) == 0) {
+			return TRUE;
+		}
+
+		/* same name */
+		if (g_strcmp0 (gs_app_get_name (tmp),
+			       gs_app_get_name (app)) == 0) {
+			return TRUE;
+		}
+	}
+	return FALSE;
 }
 
 /* vim: set noexpandtab: */

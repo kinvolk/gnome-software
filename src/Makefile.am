@@ -10,6 +10,7 @@ AM_CPPFLAGS =						\
 	$(PACKAGEKIT_CFLAGS)				\
 	$(GNOME_DESKTOP_CFLAGS)				\
 	$(POLKIT_CFLAGS)				\
+	$(JSON_GLIB_CFLAGS)				\
 	$(LIBSECRET_CFLAGS)				\
 	-DG_LOG_DOMAIN=\"Gs\"				\
 	-DI_KNOW_THE_PACKAGEKIT_GLIB2_API_IS_SUBJECT_TO_CHANGE	\
@@ -34,6 +35,8 @@ gnomesoftware_include_HEADERS =				\
 	gs-category.h					\
 	gs-os-release.h					\
 	gs-plugin.h					\
+	gs-plugin-event.h				\
+	gs-plugin-types.h				\
 	gs-plugin-vfuncs.h				\
 	gs-utils.h
 
@@ -112,13 +115,12 @@ gnome_software_cmd_SOURCES =				\
 	gs-app-list.c					\
 	gs-auth.c					\
 	gs-price.c					\
-	gs-review.c					\
 	gs-cmd.c					\
 	gs-common.c					\
 	gs-debug.c					\
 	gs-utils.c					\
 	gs-os-release.c					\
-	gs-payment-method.c				\
+	gs-plugin-event.c				\
 	gs-plugin-loader.c				\
 	gs-plugin-loader-sync.c				\
 	gs-category.c					\
@@ -131,6 +133,7 @@ gnome_software_cmd_LDADD =				\
 	$(LIBSECRET_LIBS)				\
 	$(GLIB_LIBS)					\
 	$(GTK_LIBS)					\
+	$(JSON_GLIB_LIBS)				\
 	$(LIBM)
 
 gnome_software_cmd_CFLAGS =				\
@@ -141,6 +144,8 @@ bin_PROGRAMS =						\
 
 gnome_software_SOURCES =				\
 	gnome-software.h				\
+	gd-notification.c				\
+	gd-notification.h				\
 	gs-utils.c					\
 	gs-utils.h					\
 	gs-app.c					\
@@ -158,6 +163,8 @@ gnome_software_SOURCES =				\
 	gs-category-private.h				\
 	gs-common.c					\
 	gs-common.h					\
+	gs-content-rating.c				\
+	gs-content-rating.h				\
 	gs-debug.c					\
 	gs-debug.h					\
 	gs-app-addon-row.c				\
@@ -194,11 +201,12 @@ gnome_software_SOURCES =				\
 	gs-os-release.h					\
 	gs-page.c					\
 	gs-page.h					\
-	gs-payment-method.c				\
-	gs-payment-method.h				\
 	gs-plugin.c					\
 	gs-plugin.h					\
+	gs-plugin-event.c				\
+	gs-plugin-event.h				\
 	gs-plugin-private.h				\
+	gs-plugin-types.h				\
 	gs-plugin-vfuncs.h				\
 	gs-price.c					\
 	gs-price.h					\
@@ -290,6 +298,7 @@ gnome_software_LDADD =					\
 	$(PACKAGEKIT_LIBS)				\
 	$(GNOME_DESKTOP_LIBS)				\
 	$(POLKIT_LIBS)					\
+	$(JSON_GLIB_LIBS)				\
 	$(LIBM)
 
 gnome_software_CFLAGS =					\
@@ -350,6 +359,7 @@ gs_self_test_SOURCES =						\
 	gs-category.c						\
 	gs-common.c						\
 	gs-os-release.c						\
+	gs-plugin-event.c					\
 	gs-plugin-loader-sync.c					\
 	gs-plugin-loader.c					\
 	gs-plugin.c						\
@@ -363,6 +373,7 @@ gs_self_test_LDADD =						\
 	$(LIBSECRET_LIBS)					\
 	$(GLIB_LIBS)						\
 	$(GTK_LIBS)						\
+	$(JSON_GLIB_LIBS)					\
 	$(LIBM)
 
 gs_self_test_CFLAGS = $(WARN_CFLAGS)

@@ -30,9 +30,23 @@
 
 struct GsPluginData {
 	guint			 quirk_id;
+	guint			 allow_updates_id;
+	gboolean		 allow_updates_inhibit;
 	guint			 has_auth;
 	GsAuth			*auth;
+	GsApp			*cached_origin;
 };
+
+/* just flip-flop this every few seconds */
+static gboolean
+gs_plugin_dummy_allow_updates_cb (gpointer user_data)
+{
+	GsPlugin *plugin = GS_PLUGIN (user_data);
+	GsPluginData *priv = gs_plugin_get_data (plugin);
+	gs_plugin_set_allow_updates (plugin, priv->allow_updates_inhibit);
+	priv->allow_updates_inhibit = !priv->allow_updates_inhibit;
+	return G_SOURCE_CONTINUE;
+}
 
 void
 gs_plugin_initialize (GsPlugin *plugin)
@@ -45,6 +59,10 @@ gs_plugin_initialize (GsPlugin *plugin)
 		return;
 	}
 
+	/* toggle this */
+	priv->allow_updates_id = g_timeout_add_seconds (10,
+		gs_plugin_dummy_allow_updates_cb, plugin);
+
 	/* set up a dummy authentication provider */
 	priv->auth = gs_auth_new (gs_plugin_get_name (plugin));
 	gs_auth_set_provider_name (priv->auth, "GNOME SSO");
@@ -54,6 +72,18 @@ gs_plugin_initialize (GsPlugin *plugin)
 
 	/* lets assume we read this from disk somewhere */
 	gs_auth_set_username (priv->auth, "dummy");
+
+	/* add source */
+	priv->cached_origin = gs_app_new (gs_plugin_get_name (plugin));
+	gs_app_set_kind (priv->cached_origin, AS_APP_KIND_SOURCE);
+	gs_app_set_origin_hostname (priv->cached_origin, "http://www.bbc.co.uk/");
+	gs_app_set_origin_ui (priv->cached_origin, "Dummy Repo");
+
+	/* add the source to the plugin cache which allows us to match the
+	 * unique ID to a GsApp when creating an event */
+	gs_plugin_cache_add (plugin,
+			     gs_app_get_unique_id (priv->cached_origin),
+			     priv->cached_origin);
 
 	/* need help from appstream */
 	gs_plugin_add_rule (plugin, GS_PLUGIN_RULE_RUN_AFTER, "appstream");
@@ -66,6 +96,8 @@ gs_plugin_destroy (GsPlugin *plugin)
 	GsPluginData *priv = gs_plugin_get_data (plugin);
 	if (priv->quirk_id > 0)
 		g_source_remove (priv->quirk_id);
+	if (priv->cached_origin != NULL)
+		g_object_unref (priv->cached_origin);
 }
 
 void
@@ -79,6 +111,7 @@ gs_plugin_adopt_app (GsPlugin *plugin, GsApp *app)
 	if (g_strcmp0 (gs_app_get_id (app), "mate-spell.desktop") == 0 ||
 	    g_strcmp0 (gs_app_get_id (app), "chiron.desktop") == 0 ||
 	    g_strcmp0 (gs_app_get_id (app), "zeus.desktop") == 0 ||
+	    g_strcmp0 (gs_app_get_id (app), "com.hughski.ColorHug2.driver") == 0 ||
 	    g_strcmp0 (gs_app_get_id (app), "zeus-spell.addon") == 0 ||
 	    g_strcmp0 (gs_app_get_source_default (app), "chiron") == 0)
 		gs_app_set_management_plugin (app, gs_plugin_get_name (plugin));
@@ -99,6 +132,7 @@ gs_plugin_dummy_delay (GsPlugin *plugin,
 	for (i = 0; i < 100; i++) {
 		g_usleep (timeout_us);
 		if (g_cancellable_set_error_if_cancelled (cancellable, error)) {
+			gs_utils_error_convert_gio (error);
 			ret = FALSE;
 			break;
 		}
@@ -322,7 +356,9 @@ gs_plugin_add_popular (GsPlugin *plugin,
 	gs_app_list_add (list, app1);
 
 	/* add again, this time with a prefix so it gets deduplicated */
-	app2 = gs_app_new ("dummy:zeus.desktop");
+	app2 = gs_app_new ("zeus.desktop");
+	gs_app_set_scope (app2, AS_APP_SCOPE_USER);
+	gs_app_set_bundle_kind (app2, AS_BUNDLE_KIND_SNAP);
 	gs_app_set_metadata (app2, "GnomeSoftware::Creator",
 			     gs_plugin_get_name (plugin));
 	gs_app_list_add (list, app2);
@@ -381,6 +417,8 @@ gs_plugin_update_app (GsPlugin *plugin,
 		      GCancellable *cancellable,
 		      GError **error)
 {
+	GsPluginData *priv = gs_plugin_get_data (plugin);
+
 	/* only process this app if was created by this plugin */
 	if (g_strcmp0 (gs_app_get_management_plugin (app),
 		       gs_plugin_get_name (plugin)) != 0)
@@ -389,8 +427,9 @@ gs_plugin_update_app (GsPlugin *plugin,
 	/* always fail */
 	g_set_error_literal (error,
 			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_NO_NETWORK,
+			     GS_PLUGIN_ERROR_DOWNLOAD_FAILED,
 			     "no network connection is available");
+	gs_utils_error_add_unique_id (error, priv->cached_origin);
 	return FALSE;
 }
 
@@ -402,9 +441,10 @@ gs_plugin_refine_app (GsPlugin *plugin,
 		      GError **error)
 {
 	/* default */
-	if (g_strcmp0 (gs_app_get_id_no_prefix (app), "chiron.desktop") == 0 ||
-	    g_strcmp0 (gs_app_get_id_no_prefix (app), "mate-spell.desktop") == 0 ||
-	    g_strcmp0 (gs_app_get_id_no_prefix (app), "zeus.desktop") == 0) {
+	if (g_strcmp0 (gs_app_get_id (app), "chiron.desktop") == 0 ||
+	    g_strcmp0 (gs_app_get_id (app), "mate-spell.desktop") == 0 ||
+	    g_strcmp0 (gs_app_get_id (app), "com.hughski.ColorHug2.driver") == 0 ||
+	    g_strcmp0 (gs_app_get_id (app), "zeus.desktop") == 0) {
 		if (gs_app_get_state (app) == AS_APP_STATE_UNKNOWN)
 			gs_app_set_state (app, AS_APP_STATE_INSTALLED);
 		if (gs_app_get_kind (app) == AS_APP_KIND_UNKNOWN)
@@ -652,31 +692,12 @@ gs_plugin_update_cancel (GsPlugin *plugin, GsApp *app,
 }
 
 /**
- * gs_plugin_add_payment_methods:
- */
-gboolean
-gs_plugin_add_payment_methods (GsPlugin *plugin,
-			       GPtrArray *payment_methods,
-			       GCancellable *cancellable,
-			       GError **error)
-{
-	GsPaymentMethod *method;
-	g_debug ("Adding payment methods");
-	method = gs_payment_method_new ();
-	gs_payment_method_set_description (method, "Test Payment Method");
-	gs_payment_method_add_metadata (method, "card-number", "0000 0000 0000 0000");
-	g_ptr_array_add (payment_methods, method);
-	return TRUE;
-}
-
-/**
  * gs_plugin_app_purchase:
  */
 gboolean
 gs_plugin_app_purchase (GsPlugin *plugin,
 			GsApp *app,
 			GsPrice *price,
-			GsPaymentMethod *payment_method,
 			GCancellable *cancellable,
 			GError **error)
 {
@@ -770,14 +791,9 @@ gs_plugin_auth_login (GsPlugin *plugin, GsAuth *auth,
 		       gs_auth_get_provider_id (priv->auth)) != 0)
 		return TRUE;
 
-	/* already done */
-	if (priv->has_auth) {
-		g_set_error (error,
-			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
-			     "authentication already done");
-		return FALSE;
-	}
+	/* already logged in */
+	if (priv->has_auth)
+		return TRUE;
 
 	/* check username and password */
 	if (g_strcmp0 (gs_auth_get_username (priv->auth), "dummy") != 0 ||
@@ -806,14 +822,10 @@ gs_plugin_auth_logout (GsPlugin *plugin, GsAuth *auth,
 		       gs_auth_get_provider_id (priv->auth)) != 0)
 		return TRUE;
 
-	/* not done */
-	if (!priv->has_auth) {
-		g_set_error (error,
-			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
-			     "authentication not already done");
-		return FALSE;
-	}
+	/* not logged in */
+	if (!priv->has_auth)
+		return TRUE;
+
 	priv->has_auth = FALSE;
 	gs_auth_set_flags (priv->auth, 0);
 	g_debug ("dummy now not authenticated");

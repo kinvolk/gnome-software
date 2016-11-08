@@ -41,9 +41,84 @@ struct _GsAppList
 	GObject			 parent_instance;
 	GPtrArray		*array;
 	GHashTable		*hash_by_id;		/* app-id : app */
+	GMutex			 mutex;
 };
 
 G_DEFINE_TYPE (GsAppList, gs_app_list, G_TYPE_OBJECT)
+
+/**
+ * gs_app_list_lookup:
+ * @list: A #GsAppList
+ * @unique_id: A unique_id
+ *
+ * Finds the first matching application in the list using the usual wildcard
+ * rules allowed in unique_ids.
+ *
+ * Returns: (transfer none): a #GsApp, or %NULL if not found
+ *
+ * Since: 3.22
+ **/
+GsApp *
+gs_app_list_lookup (GsAppList *list, const gchar *unique_id)
+{
+	g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&list->mutex);
+	return g_hash_table_lookup (list->hash_by_id, unique_id);
+}
+
+static gboolean
+gs_app_list_check_for_duplicate (GsAppList *list, GsApp *app)
+{
+	GsApp *app_old;
+	const gchar *id;
+	const gchar *id_old = NULL;
+
+	/* does not exist */
+	id = gs_app_get_unique_id (app);
+	app_old = g_hash_table_lookup (list->hash_by_id, id);
+	if (app_old == NULL) {
+		g_debug ("adding %s as nothing matched hash", id);
+		return TRUE;
+	}
+
+	/* existing app is a wildcard */
+	id_old = gs_app_get_unique_id (app_old);
+	if (gs_app_has_quirk (app_old, AS_APP_QUIRK_MATCH_ANY_PREFIX)) {
+		g_debug ("adding %s as %s is a wildcard", id, id_old);
+		return TRUE;
+	}
+
+	/* do a sanity check */
+	if (!as_utils_unique_id_equal (id, id_old)) {
+		g_debug ("unique-id non-equal %s as %s but hash matched!",
+			 id, id_old);
+		return TRUE;
+	}
+
+	/* already exists */
+	g_debug ("not adding duplicate %s as %s already exists", id, id_old);
+	return FALSE;
+}
+
+static void
+gs_app_list_add_safe (GsAppList *list, GsApp *app)
+{
+	const gchar *id;
+
+	/* if we're lazy-loading the ID then we can't filter for duplicates */
+	id = gs_app_get_unique_id (app);
+	if (id == NULL) {
+		g_ptr_array_add (list->array, g_object_ref (app));
+		return;
+	}
+
+	/* check for duplicate */
+	if (!gs_app_list_check_for_duplicate (list, app))
+		return;
+
+	/* just use the ref */
+	g_ptr_array_add (list->array, g_object_ref (app));
+	g_hash_table_insert (list->hash_by_id, g_strdup (id), g_object_ref (app));
+}
 
 /**
  * gs_app_list_add:
@@ -57,31 +132,71 @@ G_DEFINE_TYPE (GsAppList, gs_app_list, G_TYPE_OBJECT)
  * Applications that have the application ID lazy-loaded will always be addded
  * to the list, and to clean these up the plugin loader will also call the
  * gs_app_list_filter_duplicates() method when all plugins have run.
+ *
+ * Since: 3.22
  **/
 void
 gs_app_list_add (GsAppList *list, GsApp *app)
 {
-	const gchar *id;
+	g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&list->mutex);
+	g_return_if_fail (GS_IS_APP_LIST (list));
+	g_return_if_fail (GS_IS_APP (app));
+	gs_app_list_add_safe (list, app);
+}
+
+/**
+ * gs_app_list_remove:
+ * @list: A #GsAppList
+ * @app: A #GsApp
+ *
+ * Removes an application from the list. If the application does not exist the
+ * request is ignored.
+ *
+ * Since: 3.22
+ **/
+void
+gs_app_list_remove (GsAppList *list, GsApp *app)
+{
+	AsApp *app_tmp;
+	const gchar *unique_id;
+	g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&list->mutex);
 
 	g_return_if_fail (GS_IS_APP_LIST (list));
 	g_return_if_fail (GS_IS_APP (app));
 
-	/* if we're lazy-loading the ID then we can't filter for duplicates */
-	id = gs_app_get_id (app);
-	if (id == NULL) {
-		g_ptr_array_add (list->array, g_object_ref (app));
+	/* remove, or ignore if not found */
+	unique_id = gs_app_get_unique_id (app);
+	app_tmp = g_hash_table_lookup (list->hash_by_id, unique_id);
+	if (app_tmp == NULL)
 		return;
-	}
+	g_ptr_array_remove (list->array, app_tmp);
+	g_hash_table_remove (list->hash_by_id, unique_id);
+}
 
-	/* check for hash_by_id */
-	if (g_hash_table_lookup (list->hash_by_id, id) != NULL) {
-		g_debug ("not adding duplicate %s", id);
-		return;
-	}
+/**
+ * gs_app_list_add_list:
+ * @list: A #GsAppList
+ * @donor: Another #GsAppList
+ *
+ * Adds all the applications in @donor to @list.
+ *
+ * Since: 3.24
+ **/
+void
+gs_app_list_add_list (GsAppList *list, GsAppList *donor)
+{
+	guint i;
+	g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&list->mutex);
 
-	/* just use the ref */
-	g_ptr_array_add (list->array, g_object_ref (app));
-	g_hash_table_insert (list->hash_by_id, (gpointer) id, (gpointer) app);
+	g_return_if_fail (GS_IS_APP_LIST (list));
+	g_return_if_fail (GS_IS_APP_LIST (donor));
+	g_return_if_fail (list != donor);
+
+	/* add each app */
+	for (i = 0; i < donor->array->len; i++) {
+		GsApp *app = gs_app_list_index (donor, i);
+		gs_app_list_add_safe (list, app);
+	}
 }
 
 /**
@@ -92,6 +207,8 @@ gs_app_list_add (GsAppList *list, GsApp *app)
  * Gets an application at a specific position in the list.
  *
  * Returns: (transfer none): a #GsApp, or %NULL if invalid
+ *
+ * Since: 3.22
  **/
 GsApp *
 gs_app_list_index (GsAppList *list, guint idx)
@@ -106,6 +223,8 @@ gs_app_list_index (GsAppList *list, guint idx)
  * Gets the length of the application list.
  *
  * Returns: Integer
+ *
+ * Since: 3.22
  **/
 guint
 gs_app_list_length (GsAppList *list)
@@ -114,18 +233,27 @@ gs_app_list_length (GsAppList *list)
 	return list->array->len;
 }
 
+static void
+gs_app_list_remove_all_safe (GsAppList *list)
+{
+	g_ptr_array_set_size (list->array, 0);
+	g_hash_table_remove_all (list->hash_by_id);
+}
+
 /**
- * gs_app_list_randomize:
+ * gs_app_list_remove_all:
  * @list: A #GsAppList
  *
  * Removes all applications from the list.
+ *
+ * Since: 3.22
  **/
 void
 gs_app_list_remove_all (GsAppList *list)
 {
+	g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&list->mutex);
 	g_return_if_fail (GS_IS_APP_LIST (list));
-	g_ptr_array_set_size (list->array, 0);
-	g_hash_table_remove_all (list->hash_by_id);
+	gs_app_list_remove_all_safe (list);
 }
 
 /**
@@ -135,6 +263,8 @@ gs_app_list_remove_all (GsAppList *list)
  * @user_data: the user pointer to pass to @func
  *
  * If func() returns TRUE for the GsApp, then the app is kept.
+ *
+ * Since: 3.22
  **/
 void
 gs_app_list_filter (GsAppList *list, GsAppListFilterFunc func, gpointer user_data)
@@ -142,19 +272,20 @@ gs_app_list_filter (GsAppList *list, GsAppListFilterFunc func, gpointer user_dat
 	guint i;
 	GsApp *app;
 	g_autoptr(GsAppList) old = NULL;
+	g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&list->mutex);
 
 	g_return_if_fail (GS_IS_APP_LIST (list));
 	g_return_if_fail (func != NULL);
 
 	/* deep copy to a temp list and clear the current one */
 	old = gs_app_list_copy (list);
-	gs_app_list_remove_all (list);
+	gs_app_list_remove_all_safe (list);
 
 	/* see if any of the apps need filtering */
 	for (i = 0; i < old->array->len; i++) {
 		app = gs_app_list_index (old, i);
 		if (func (app, user_data))
-			gs_app_list_add (list, app);
+			gs_app_list_add_safe (list, app);
 	}
 }
 
@@ -178,10 +309,13 @@ gs_app_list_sort_cb (gconstpointer a, gconstpointer b, gpointer user_data)
  * @func: A #GCompareFunc
  *
  * Sorts the application list.
+ *
+ * Since: 3.22
  **/
 void
 gs_app_list_sort (GsAppList *list, GsAppListSortFunc func, gpointer user_data)
 {
+	g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&list->mutex);
 	GsAppListSortHelper helper;
 	g_return_if_fail (GS_IS_APP_LIST (list));
 	helper.func = func;
@@ -210,6 +344,8 @@ gs_app_list_randomize_cb (gconstpointer a, gconstpointer b, gpointer user_data)
  *
  * Randomize the order of the list, but don't change the order until
  * the next day.
+ *
+ * Since: 3.22
  **/
 void
 gs_app_list_randomize (GsAppList *list)
@@ -220,6 +356,7 @@ gs_app_list_randomize (GsAppList *list)
 	gchar sort_key[] = { '\0', '\0', '\0', '\0' };
 	g_autoptr(GDateTime) date = NULL;
 	g_autofree gchar *key = NULL;
+	g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&list->mutex);
 
 	g_return_if_fail (GS_IS_APP_LIST (list));
 
@@ -247,6 +384,8 @@ gs_app_list_randomize (GsAppList *list)
  * @list: A #GsAppList
  *
  * Filter any duplicate applications from the list.
+ *
+ * Since: 3.22
  **/
 void
 gs_app_list_filter_duplicates (GsAppList *list, GsAppListFilterFlags flags)
@@ -258,6 +397,7 @@ gs_app_list_filter_duplicates (GsAppList *list, GsAppListFilterFlags flags)
 	g_autoptr(GHashTable) hash = NULL;
 	g_autoptr(GList) values = NULL;
 	GList *l;
+	g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&list->mutex);
 
 	g_return_if_fail (GS_IS_APP_LIST (list));
 
@@ -266,9 +406,9 @@ gs_app_list_filter_duplicates (GsAppList *list, GsAppListFilterFlags flags)
 				      g_free, (GDestroyNotify) g_object_unref);
 	for (i = 0; i < list->array->len; i++) {
 		app = gs_app_list_index (list, i);
-		id = gs_app_get_id (app);
+		id = gs_app_get_unique_id (app);
 		if (flags & GS_APP_LIST_FILTER_FLAG_PRIORITY)
-			id = gs_app_get_id_no_prefix (app);
+			id = gs_app_get_id (app);
 		if (id == NULL) {
 			g_autofree gchar *str = gs_app_to_string (app);
 			g_debug ("ignoring as no application id for: %s", str);
@@ -276,7 +416,7 @@ gs_app_list_filter_duplicates (GsAppList *list, GsAppListFilterFlags flags)
 		}
 		found = g_hash_table_lookup (hash, id);
 		if (found == NULL) {
-			g_debug ("found new %s", gs_app_get_id (app));
+			g_debug ("found new %s", id);
 			g_hash_table_insert (hash,
 					     g_strdup (id),
 					     g_object_ref (app));
@@ -288,7 +428,7 @@ gs_app_list_filter_duplicates (GsAppList *list, GsAppListFilterFlags flags)
 			if (gs_app_get_priority (app) >
 			    gs_app_get_priority (found)) {
 				g_debug ("using better %s (priority %u > %u)",
-					 gs_app_get_id (app),
+					 id,
 					 gs_app_get_priority (app),
 					 gs_app_get_priority (found));
 				g_hash_table_insert (hash,
@@ -297,21 +437,21 @@ gs_app_list_filter_duplicates (GsAppList *list, GsAppListFilterFlags flags)
 				continue;
 			}
 			g_debug ("ignoring worse duplicate %s (priority %u > %u)",
-				 gs_app_get_id (app),
+				 id,
 				 gs_app_get_priority (app),
 				 gs_app_get_priority (found));
 			continue;
 		}
-		g_debug ("ignoring duplicate %s", gs_app_get_id (app));
+		g_debug ("ignoring duplicate %s", id);
 		continue;
 	}
 
 	/* add back the best results to the existing list */
-	gs_app_list_remove_all (list);
+	gs_app_list_remove_all_safe (list);
 	values = g_hash_table_get_values (hash);
 	for (l = values; l != NULL; l = l->next) {
 		app = GS_APP (l->data);
-		gs_app_list_add (list, app);
+		gs_app_list_add_safe (list, app);
 	}
 }
 
@@ -322,6 +462,8 @@ gs_app_list_filter_duplicates (GsAppList *list, GsAppListFilterFlags flags)
  * Returns a deep copy of the application list.
  *
  * Returns: A newly allocated #GsAppList
+ *
+ * Since: 3.22
  **/
 GsAppList *
 gs_app_list_copy (GsAppList *list)
@@ -334,7 +476,7 @@ gs_app_list_copy (GsAppList *list)
 	new = gs_app_list_new ();
 	for (i = 0; i < gs_app_list_length (list); i++) {
 		GsApp *app = gs_app_list_index (list, i);
-		gs_app_list_add (new, app);
+		gs_app_list_add_safe (new, app);
 	}
 	return new;
 }
@@ -345,6 +487,7 @@ gs_app_list_finalize (GObject *object)
 	GsAppList *list = GS_APP_LIST (object);
 	g_ptr_array_unref (list->array);
 	g_hash_table_unref (list->hash_by_id);
+	g_mutex_clear (&list->mutex);
 	G_OBJECT_CLASS (gs_app_list_parent_class)->finalize (object);
 }
 
@@ -358,8 +501,12 @@ gs_app_list_class_init (GsAppListClass *klass)
 static void
 gs_app_list_init (GsAppList *list)
 {
+	g_mutex_init (&list->mutex);
 	list->array = g_ptr_array_new_with_free_func ((GDestroyNotify) g_object_unref);
-	list->hash_by_id = g_hash_table_new (g_str_hash, g_str_equal);
+	list->hash_by_id = g_hash_table_new_full ((GHashFunc) as_utils_unique_id_hash,
+						  (GEqualFunc) as_utils_unique_id_equal,
+						  g_free,
+						  (GDestroyNotify) g_object_unref);
 }
 
 /**
@@ -368,6 +515,8 @@ gs_app_list_init (GsAppList *list)
  * Creates a new list.
  *
  * Returns: A newly allocated #GsAppList
+ *
+ * Since: 3.22
  **/
 GsAppList *
 gs_app_list_new (void)

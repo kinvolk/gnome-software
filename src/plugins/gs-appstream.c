@@ -27,6 +27,22 @@
 
 #define	GS_APPSTREAM_MAX_SCREENSHOTS	5
 
+GsApp *
+gs_appstream_create_app (GsPlugin *plugin, AsApp *item, GError **error)
+{
+	const gchar *unique_id = as_app_get_unique_id (item);
+	GsApp *app = gs_plugin_cache_lookup (plugin, unique_id);
+	if (app == NULL) {
+		app = gs_app_new (as_app_get_id (item));
+		gs_app_set_metadata (app, "GnomeSoftware::Creator",
+				     gs_plugin_get_name (plugin));
+		if (!gs_appstream_refine_app (plugin, app, item, error))
+			return NULL;
+		gs_plugin_cache_add (plugin, unique_id, app);
+	}
+	return app;
+}
+
 static AsIcon *
 gs_appstream_get_icon_by_kind (AsApp *app, AsIconKind icon_kind)
 {
@@ -178,6 +194,23 @@ gs_appstream_refine_add_reviews (GsApp *app, AsApp *item)
 	}
 }
 
+static void
+gs_appstream_refine_add_provides (GsApp *app, AsApp *item)
+{
+	AsProvide *provide;
+	GPtrArray *provides;
+	guint i;
+
+	/* do we have any to add */
+	if (gs_app_get_provides(app)->len > 0)
+		return;
+	provides = as_app_get_provides (item);
+	for (i = 0; i < provides->len; i++) {
+		provide = g_ptr_array_index (provides, i);
+		gs_app_add_provide (app, provide);
+	}
+}
+
 static gboolean
 gs_appstream_is_recent_release (AsApp *app)
 {
@@ -259,46 +292,34 @@ gs_appstream_create_runtime (GsPlugin *plugin,
 			     GsApp *parent,
 			     const gchar *runtime)
 {
-	const gchar *id_parent;
+	GsApp *app_cache;
 	g_autofree gchar *id = NULL;
 	g_autofree gchar *source = NULL;
-	g_auto(GStrv) id_split = NULL;
-	g_auto(GStrv) runtime_split = NULL;
+	g_auto(GStrv) split = NULL;
 	g_autoptr(GsApp) app = NULL;
 
 	/* get the name/arch/branch */
-	runtime_split = g_strsplit (runtime, "/", -1);
-	if (g_strv_length (runtime_split) != 3)
+	split = g_strsplit (runtime, "/", -1);
+	if (g_strv_length (split) != 3)
 		return NULL;
-
-	/* find the parent app ID prefix */
-	id_parent = gs_app_get_id (parent);
-	if (id_parent == NULL)
-		return NULL;
-	id_split = g_strsplit (id_parent, ":", 2);
-	if (g_strv_length (id_split) == 2) {
-		id = g_strdup_printf ("%s:%s.runtime",
-				      id_split[0],
-				      runtime_split[0]);
-	} else {
-		id = g_strdup_printf ("%s.runtime", runtime_split[0]);
-	}
-
-	/* search in the cache */
-	app = gs_plugin_cache_lookup (plugin, id);
-	if (app != NULL)
-		return g_steal_pointer (&app);
 
 	/* create the complete GsApp from the single string */
+	id = g_strdup_printf ("%s.runtime", split[0]);
 	app = gs_app_new (id);
 	source = g_strdup_printf ("runtime/%s", runtime);
 	gs_app_add_source (app, source);
+	gs_app_set_bundle_kind (app, AS_BUNDLE_KIND_FLATPAK);
 	gs_app_set_kind (app, AS_APP_KIND_RUNTIME);
-	gs_app_set_version (app, runtime_split[2]);
+	gs_app_set_branch (app, split[2]);
+	gs_app_set_scope (app, gs_app_get_scope (parent));
+
+	/* search in the cache */
+	app_cache = gs_plugin_cache_lookup (plugin, gs_app_get_unique_id (app));
+	if (app_cache != NULL)
+		return g_object_ref (app_cache);
 
 	/* save in the cache */
-	gs_plugin_cache_add (plugin, id, app);
-
+	gs_plugin_cache_add (plugin, NULL, app);
 	return g_steal_pointer (&app);
 }
 
@@ -331,7 +352,8 @@ gs_refine_item_management_plugin (GsPlugin *plugin, GsApp *app, AsApp *item)
 				app2 = gs_appstream_create_runtime (plugin, app, runtime);
 				if (app2 != NULL) {
 					g_debug ("runtime for %s is %s",
-						 gs_app_get_id (app), runtime);
+						 gs_app_get_unique_id (app),
+						 runtime);
 					gs_app_set_runtime (app, app2);
 				}
 			}
@@ -353,12 +375,8 @@ gs_appstream_refine_app_updates (GsPlugin *plugin,
 	g_autoptr(GPtrArray) updates_list = NULL;
 
 	/* not enough data to make sense */
-	if (gs_app_get_version (app) == NULL) {
-		g_debug ("no installed version for %s, "
-			 "so unable to add AppStream releases",
-			 gs_app_get_id (app));
+	if (gs_app_get_version (app) == NULL)
 		return TRUE;
-	}
 
 	/* make a list of valid updates */
 	updates_list = g_ptr_array_new ();
@@ -372,7 +390,7 @@ gs_appstream_refine_app_updates (GsPlugin *plugin,
 			 as_release_get_version (rel),
 			 as_release_get_state (rel));
 		if (as_utils_vercmp (as_release_get_version (rel),
-				     gs_app_get_version (app)) < 0)
+				     gs_app_get_version (app)) <= 0)
 			continue;
 
 		/* use the 'worst' urgency, e.g. critical over enhancement */
@@ -396,8 +414,10 @@ gs_appstream_refine_app_updates (GsPlugin *plugin,
 		desc = as_markup_convert (as_release_get_description (rel, NULL),
 					  AS_MARKUP_CONVERT_FORMAT_SIMPLE,
 					  error);
-		if (desc == NULL)
+		if (desc == NULL) {
+			gs_utils_error_convert_appstream (error);
 			return FALSE;
+		}
 		gs_app_set_update_details (app, desc);
 
 	/* get the descriptions with a version prefix */
@@ -409,8 +429,10 @@ gs_appstream_refine_app_updates (GsPlugin *plugin,
 			desc = as_markup_convert (as_release_get_description (rel, NULL),
 						  AS_MARKUP_CONVERT_FORMAT_SIMPLE,
 						  error);
-			if (desc == NULL)
+			if (desc == NULL) {
+				gs_utils_error_convert_appstream (error);
 				return FALSE;
+			}
 			g_string_append_printf (update_desc,
 						"Version %s:\n%s\n\n",
 						as_release_get_version (rel),
@@ -454,6 +476,29 @@ _gs_utils_locale_has_translations (const gchar *locale)
 	return TRUE;
 }
 
+static AsBundleKind
+gs_appstream_get_bundle_kind (AsApp *item)
+{
+	GPtrArray *bundles;
+	GPtrArray *pkgnames;
+
+	/* prefer bundle */
+	bundles = as_app_get_bundles (item);
+	if (bundles->len > 0) {
+		AsBundle *bundle = g_ptr_array_index (bundles, 0);
+		if (as_bundle_get_kind (bundle) != AS_BUNDLE_KIND_UNKNOWN)
+			return as_bundle_get_kind (bundle);
+	}
+
+	/* fallback to packages */
+	pkgnames = as_app_get_pkgnames (item);
+	if (pkgnames->len > 0)
+		return AS_BUNDLE_KIND_PACKAGE;
+
+	/* nothing */
+	return AS_BUNDLE_KIND_UNKNOWN;
+}
+
 gboolean
 gs_appstream_refine_app (GsPlugin *plugin,
 			 GsApp *app,
@@ -461,8 +506,10 @@ gs_appstream_refine_app (GsPlugin *plugin,
 			 GError **error)
 {
 	GHashTable *urls;
+	GPtrArray *array;
 	GPtrArray *pkgnames;
 	GPtrArray *kudos;
+	const gchar *current_desktop;
 	const gchar *tmp;
 	guint i;
 
@@ -473,16 +520,9 @@ gs_appstream_refine_app (GsPlugin *plugin,
 	}
 
 	/* is installed already */
-	if (gs_app_get_state (app) == AS_APP_STATE_UNKNOWN) {
-		switch (as_app_get_source_kind (item)) {
-		case AS_APP_SOURCE_KIND_APPDATA:
-		case AS_APP_SOURCE_KIND_DESKTOP:
-		case AS_APP_SOURCE_KIND_METAINFO:
-			gs_app_set_state (app, AS_APP_STATE_INSTALLED);
-			break;
-		default:
-			break;
-		}
+	if (gs_app_get_state (app) == AS_APP_STATE_UNKNOWN &&
+	    as_app_get_state (item) != AS_APP_STATE_UNKNOWN) {
+		gs_app_set_state (app, as_app_get_state (item));
 	}
 
 	/* types we can never launch */
@@ -512,7 +552,34 @@ gs_appstream_refine_app (GsPlugin *plugin,
 		gs_app_set_id (app, as_app_get_id (item));
 
 	/* set source */
-	gs_app_set_metadata (app, "appstream::source-file", as_app_get_source_file (item));
+	if (gs_app_get_metadata_item (app, "appstream::source-file") == NULL) {
+		gs_app_set_metadata (app, "appstream::source-file",
+				     as_app_get_source_file (item));
+	}
+
+	/* scope */
+	if (gs_app_get_scope (app) == AS_APP_SCOPE_UNKNOWN &&
+	    as_app_get_scope (item) != AS_APP_SCOPE_UNKNOWN)
+		gs_app_set_scope (app, as_app_get_scope (item));
+
+	/* set branch */
+	if (as_app_get_branch (item) != NULL &&
+	    gs_app_get_branch (app) == NULL)
+		gs_app_set_branch (app, as_app_get_branch (item));
+
+	/* set content rating */
+	array = as_app_get_content_ratings (item);
+	for (i = 0; i < array->len; i++) {
+		AsContentRating *cr = g_ptr_array_index (array, i);
+		if (g_strcmp0 (as_content_rating_get_kind (cr), "oars-1.0") == 0) {
+			gs_app_set_content_rating (app, cr);
+			break;
+		}
+	}
+
+	/* bundle-kind */
+	if (gs_app_get_bundle_kind (app) == AS_BUNDLE_KIND_UNKNOWN)
+		gs_app_set_bundle_kind (app, gs_appstream_get_bundle_kind (item));
 
 	/* set name */
 	tmp = as_app_get_name (item, NULL);
@@ -555,11 +622,10 @@ gs_appstream_refine_app (GsPlugin *plugin,
 	/* set origin */
 	if (as_app_get_origin (item) != NULL &&
 	    gs_app_get_origin (app) == NULL ) {
-		tmp = as_app_get_origin (item);
-		if (g_str_has_prefix (tmp, "flatpak:"))
-			gs_app_set_origin (app, tmp + 8);
-		if (g_str_has_prefix (tmp, "user-flatpak:"))
-			gs_app_set_origin (app, tmp + 13);
+		tmp = as_app_get_unique_id (item);
+		if (g_str_has_prefix (tmp, "user/flatpak/") ||
+		    g_str_has_prefix (tmp, "system/flatpak/"))
+			gs_app_set_origin (app, as_app_get_origin (item));
 	}
 
 	/* set description */
@@ -568,6 +634,7 @@ gs_appstream_refine_app (GsPlugin *plugin,
 		g_autofree gchar *from_xml = NULL;
 		from_xml = as_markup_convert_simple (tmp, error);
 		if (from_xml == NULL) {
+			gs_utils_error_convert_appstream (error);
 			g_prefix_error (error, "trying to parse '%s': ", tmp);
 			return FALSE;
 		}
@@ -589,10 +656,27 @@ gs_appstream_refine_app (GsPlugin *plugin,
 	    gs_app_get_project_group (app) == NULL)
 		gs_app_set_project_group (app, as_app_get_project_group (item));
 
-	/* this is a core application for the desktop and cannot be removed */
-	if (as_app_has_compulsory_for_desktop (item, "GNOME") &&
-	    gs_app_get_kind (app) == AS_APP_KIND_DESKTOP)
-		gs_app_add_quirk (app, AS_APP_QUIRK_COMPULSORY);
+	/*
+	 * Set the core applications for the current desktop that cannot be
+	 * removed -- but note: XDG_CURRENT_DESKTOP="GNOME" is different to
+	 * XDG_CURRENT_DESKTOP="Ubuntu:GNOME" here.
+	 *
+	 * To define what is compulsory for the hybrid desktop either:
+	 *
+	 *  - Add an appstream merge file downstream with the tag
+	 *    <compulsory_for_desktop>Ubuntu:GNOME</compulsory_for_desktop>
+	 *
+	 *  - Get upstream projects to add the <compulsory_for_desktop> tag
+	 */
+	array = as_app_get_compulsory_for_desktops (item);
+	current_desktop = g_getenv ("XDG_CURRENT_DESKTOP");
+	for (i = 0; i < array->len; i++) {
+		tmp = g_ptr_array_index (array, i);
+		if (g_strcmp0 (current_desktop, tmp) == 0) {
+			gs_app_add_quirk (app, AS_APP_QUIRK_COMPULSORY);
+			break;
+		}
+	}
 
 	/* set id kind */
 	if (gs_app_get_kind (app) == AS_APP_KIND_UNKNOWN)
@@ -614,6 +698,9 @@ gs_appstream_refine_app (GsPlugin *plugin,
 
 	/* set reviews */
 	gs_appstream_refine_add_reviews (app, item);
+
+	/* set provides */
+	gs_appstream_refine_add_provides (app, item);
 
 	/* are the screenshots perfect */
 	if (gs_appstream_are_screenshots_perfect (item))
@@ -676,4 +763,310 @@ gs_appstream_refine_app (GsPlugin *plugin,
 		return FALSE;
 
 	return TRUE;
+}
+
+static gboolean
+gs_appstream_store_search_item (GsPlugin *plugin,
+				AsApp *item,
+				gchar **values,
+				GsAppList *list,
+				GCancellable *cancellable,
+				GError **error)
+{
+	AsApp *item_tmp;
+	GPtrArray *addons;
+	guint i;
+	guint match_value;
+	g_autoptr(GsApp) app = NULL;
+
+	/* match against the app or any of the addons */
+	match_value = as_app_search_matches_all (item, values);
+	addons = as_app_get_addons (item);
+	for (i = 0; i < addons->len; i++) {
+		item_tmp = g_ptr_array_index (addons, i);
+		match_value |= as_app_search_matches_all (item_tmp, values);
+	}
+
+	/* no match */
+	if (match_value == 0)
+		return TRUE;
+
+	/* create app */
+	app = gs_appstream_create_app (plugin, item, error);
+	if (app == NULL)
+		return FALSE;
+	gs_app_set_match_value (app, match_value);
+	gs_app_list_add (list, app);
+	return TRUE;
+}
+
+gboolean
+gs_appstream_store_search (GsPlugin *plugin,
+			   AsStore *store,
+			   gchar **values,
+			   GsAppList *list,
+			   GCancellable *cancellable,
+			   GError **error)
+{
+	AsApp *item;
+	GPtrArray *array;
+	gboolean ret = TRUE;
+	guint i;
+	g_autoptr(AsProfileTask) ptask = NULL;
+
+	/* search categories for the search term */
+	ptask = as_profile_start_literal (gs_plugin_get_profile (plugin),
+					  "appstream::search");
+	g_assert (ptask != NULL);
+	array = as_store_get_apps (store);
+	for (i = 0; i < array->len; i++) {
+		if (g_cancellable_set_error_if_cancelled (cancellable, error)) {
+			gs_utils_error_convert_gio (error);
+			return FALSE;
+		}
+
+		item = g_ptr_array_index (array, i);
+		ret = gs_appstream_store_search_item (plugin, item,
+						      values, list,
+						      cancellable, error);
+		if (!ret)
+			return FALSE;
+	}
+	return TRUE;
+}
+
+static gboolean
+_as_app_matches_desktop_group_set (AsApp *app, gchar **desktop_groups)
+{
+	guint i;
+	for (i = 0; desktop_groups[i] != NULL; i++) {
+		if (!as_app_has_category (app, desktop_groups[i]))
+			return FALSE;
+	}
+	return TRUE;
+}
+
+static gboolean
+_as_app_matches_desktop_group (AsApp *app, const gchar *desktop_group)
+{
+	g_auto(GStrv) split = g_strsplit (desktop_group, "::", -1);
+	return _as_app_matches_desktop_group_set (app, split);
+}
+
+static void
+gs_appstream_store_add_categories_for_app (GsCategory *parent, AsApp *app)
+{
+	GPtrArray *children;
+	GPtrArray *desktop_groups;
+	GsCategory *category;
+	guint i, j;
+
+	/* find all the sub-categories */
+	children = gs_category_get_children (parent);
+	for (j = 0; j < children->len; j++) {
+		gboolean matched = FALSE;
+		category = GS_CATEGORY (g_ptr_array_index (children, j));
+
+		/* do any desktop_groups match this application */
+		desktop_groups = gs_category_get_desktop_groups (category);
+		for (i = 0; i < desktop_groups->len; i++) {
+			const gchar *desktop_group = g_ptr_array_index (desktop_groups, i);
+			if (_as_app_matches_desktop_group (app, desktop_group)) {
+				matched = TRUE;
+				break;
+			}
+		}
+		if (matched) {
+			gs_category_increment_size (category);
+			gs_category_increment_size (parent);
+		}
+	}
+}
+
+gboolean
+gs_appstream_store_add_category_apps (GsPlugin *plugin,
+				      AsStore *store,
+				      GsCategory *category,
+				      GsAppList *list,
+				      GCancellable *cancellable,
+				      GError **error)
+{
+	GPtrArray *array;
+	GPtrArray *desktop_groups;
+	guint i;
+	guint j;
+	g_autoptr(AsProfileTask) ptask = NULL;
+
+	/* just look at each app in turn */
+	ptask = as_profile_start_literal (gs_plugin_get_profile (plugin),
+					  "appstream::add-category-apps");
+	g_assert (ptask != NULL);
+	array = as_store_get_apps (store);
+	desktop_groups = gs_category_get_desktop_groups (category);
+	if (desktop_groups->len == 0) {
+		g_warning ("no desktop_groups for %s", gs_category_get_id (category));
+		return TRUE;
+	}
+	for (j = 0; j < desktop_groups->len; j++) {
+		const gchar *desktop_group = g_ptr_array_index (desktop_groups, j);
+		g_auto(GStrv) split = g_strsplit (desktop_group, "::", -1);
+
+		/* match the app */
+		for (i = 0; i < array->len; i++) {
+			AsApp *item;
+			g_autoptr(GsApp) app = NULL;
+
+			/* no ID is invalid */
+			item = g_ptr_array_index (array, i);
+			if (as_app_get_id (item) == NULL)
+				continue;
+
+			/* match all the desktop groups */
+			if (!_as_app_matches_desktop_group_set (item, split))
+				continue;
+
+			/* add all the data we can */
+			app = gs_appstream_create_app (plugin, item, error);
+			if (app == NULL)
+				return FALSE;
+			gs_app_list_add (list, app);
+		}
+	}
+	return TRUE;
+}
+
+gboolean
+gs_appstream_store_add_categories (GsPlugin *plugin,
+				   AsStore *store,
+				   GPtrArray *list,
+				   GCancellable *cancellable,
+				   GError **error)
+{
+	AsApp *app;
+	GPtrArray *array;
+	guint i;
+	guint j;
+	g_autoptr(AsProfileTask) ptask = NULL;
+
+	/* find out how many packages are in each category */
+	ptask = as_profile_start_literal (gs_plugin_get_profile (plugin),
+					  "appstream::add-categories");
+	g_assert (ptask != NULL);
+	array = as_store_get_apps (store);
+	for (i = 0; i < array->len; i++) {
+		app = g_ptr_array_index (array, i);
+		if (as_app_get_id (app) == NULL)
+			continue;
+		if (as_app_get_priority (app) < 0)
+			continue;
+		for (j = 0; j < list->len; j++) {
+			GsCategory *parent = GS_CATEGORY (g_ptr_array_index (list, j));
+			gs_appstream_store_add_categories_for_app (parent, app);
+		}
+	}
+	return TRUE;
+}
+
+gboolean
+gs_appstream_add_popular (GsPlugin *plugin,
+			  AsStore *store,
+			  GsAppList *list,
+			  GCancellable *cancellable,
+			  GError **error)
+{
+	AsApp *item;
+	GPtrArray *array;
+	guint i;
+	g_autoptr(AsProfileTask) ptask = NULL;
+
+	/* find out how many packages are in each category */
+	ptask = as_profile_start_literal (gs_plugin_get_profile (plugin),
+					  "appstream::add-popular");
+	g_assert (ptask != NULL);
+	array = as_store_get_apps (store);
+	for (i = 0; i < array->len; i++) {
+		g_autoptr(GsApp) app = NULL;
+		item = g_ptr_array_index (array, i);
+		if (as_app_get_id (item) == NULL)
+			continue;
+		if (!as_app_has_kudo (item, "GnomeSoftware::popular"))
+			continue;
+		app = gs_app_new (as_app_get_id (item));
+		gs_app_add_quirk (app, AS_APP_QUIRK_MATCH_ANY_PREFIX);
+		gs_app_list_add (list, app);
+	}
+	return TRUE;
+}
+
+gboolean
+gs_appstream_add_featured (GsPlugin *plugin,
+			   AsStore *store,
+			   GsAppList *list,
+			   GCancellable *cancellable,
+			   GError **error)
+{
+	AsApp *item;
+	GPtrArray *array;
+	guint i;
+	g_autoptr(AsProfileTask) ptask = NULL;
+
+	/* find out how many packages are in each category */
+	ptask = as_profile_start_literal (gs_plugin_get_profile (plugin),
+					  "appstream::add-featured");
+	g_assert (ptask != NULL);
+	array = as_store_get_apps (store);
+	for (i = 0; i < array->len; i++) {
+		g_autoptr(GsApp) app = NULL;
+		item = g_ptr_array_index (array, i);
+		if (as_app_get_id (item) == NULL)
+			continue;
+		if (as_app_get_metadata_item (item, "GnomeSoftware::FeatureTile-css") == NULL)
+			continue;
+		app = gs_app_new (as_app_get_id (item));
+		gs_app_add_quirk (app, AS_APP_QUIRK_MATCH_ANY_PREFIX);
+		gs_app_list_add (list, app);
+	}
+	return TRUE;
+}
+
+void
+gs_appstream_add_extra_info (GsPlugin *plugin, AsApp *app)
+{
+	const gchar *tmp;
+
+	/* add more search terms */
+	switch (as_app_get_kind (app)) {
+	case AS_APP_KIND_WEB_APP:
+	case AS_APP_KIND_INPUT_METHOD:
+		tmp = as_app_kind_to_string (as_app_get_kind (app));
+		g_debug ("adding keyword '%s' to %s",
+			 tmp, as_app_get_unique_id (app));
+		as_app_add_keyword (app, NULL, tmp);
+		break;
+	default:
+		break;
+	}
+
+	/* fix up these */
+	if (as_app_get_kind (app) == AS_APP_KIND_LOCALIZATION &&
+	    g_str_has_prefix (as_app_get_id (app),
+			      "org.fedoraproject.LangPack-")) {
+		g_autoptr(AsIcon) icon = NULL;
+
+		/* add icon */
+		icon = as_icon_new ();
+		as_icon_set_kind (icon, AS_ICON_KIND_STOCK);
+		as_icon_set_name (icon, "accessories-dictionary-symbolic");
+		as_app_add_icon (app, icon);
+
+		/* add categories */
+		as_app_add_category (app, "Addons");
+		as_app_add_category (app, "Localization");
+	}
+
+	/* fix up drivers with our nonstandard groups */
+	if (as_app_get_kind (app) == AS_APP_KIND_DRIVER) {
+		as_app_add_category (app, "Addons");
+		as_app_add_category (app, "Drivers");
+	}
 }

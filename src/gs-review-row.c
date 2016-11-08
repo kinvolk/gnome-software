@@ -66,7 +66,11 @@ gs_review_row_refresh (GsReviewRow *row)
 	gs_star_widget_set_rating (GS_STAR_WIDGET (priv->stars),
 				   as_review_get_rating (priv->review));
 	reviewer = as_review_get_reviewer_name (priv->review);
-	gtk_label_set_text (GTK_LABEL (priv->author_label), reviewer ? reviewer : "");
+	if (reviewer == NULL) {
+		/* TRANSLATORS: this is when a user doesn't specify a name */
+		reviewer = _("Unknown");
+	}
+	gtk_label_set_text (GTK_LABEL (priv->author_label), reviewer);
 	date = as_review_get_date (priv->review);
 	if (date != NULL)
 		text = g_date_time_format (date, "%e %B %Y");
@@ -83,23 +87,23 @@ gs_review_row_refresh (GsReviewRow *row)
 		priv->actions = 0;
 
 	/* set actions up */
-	if ((priv->actions & (1 << GS_PLUGIN_REVIEW_ACTION_UPVOTE |
-			      1 << GS_PLUGIN_REVIEW_ACTION_DOWNVOTE |
-			      1 << GS_PLUGIN_REVIEW_ACTION_DISMISS)) == 0) {
+	if ((priv->actions & (1 << GS_PLUGIN_ACTION_REVIEW_UPVOTE |
+			      1 << GS_PLUGIN_ACTION_REVIEW_DOWNVOTE |
+			      1 << GS_PLUGIN_ACTION_REVIEW_DISMISS)) == 0) {
 		gtk_widget_set_visible (priv->box_voting, FALSE);
 	} else {
 		gtk_widget_set_visible (priv->box_voting, TRUE);
 		gtk_widget_set_visible (priv->button_yes,
-					priv->actions & 1 << GS_PLUGIN_REVIEW_ACTION_UPVOTE);
+					priv->actions & 1 << GS_PLUGIN_ACTION_REVIEW_UPVOTE);
 		gtk_widget_set_visible (priv->button_no,
-					priv->actions & 1 << GS_PLUGIN_REVIEW_ACTION_DOWNVOTE);
+					priv->actions & 1 << GS_PLUGIN_ACTION_REVIEW_DOWNVOTE);
 		gtk_widget_set_visible (priv->button_dismiss,
-					priv->actions & 1 << GS_PLUGIN_REVIEW_ACTION_DISMISS);
+					priv->actions & 1 << GS_PLUGIN_ACTION_REVIEW_DISMISS);
 	}
 	gtk_widget_set_visible (priv->button_remove,
-				priv->actions & 1 << GS_PLUGIN_REVIEW_ACTION_REMOVE);
+				priv->actions & 1 << GS_PLUGIN_ACTION_REVIEW_REMOVE);
 	gtk_widget_set_visible (priv->button_report,
-				priv->actions & 1 << GS_PLUGIN_REVIEW_ACTION_REPORT);
+				priv->actions & 1 << GS_PLUGIN_ACTION_REVIEW_REPORT);
 }
 
 static gboolean
@@ -173,14 +177,14 @@ static void
 gs_review_row_button_clicked_upvote_cb (GtkButton *button, GsReviewRow *row)
 {
 	g_signal_emit (row, signals[SIGNAL_BUTTON_CLICKED], 0,
-		       GS_PLUGIN_REVIEW_ACTION_UPVOTE);
+		       GS_PLUGIN_ACTION_REVIEW_UPVOTE);
 }
 
 static void
 gs_review_row_button_clicked_downvote_cb (GtkButton *button, GsReviewRow *row)
 {
 	g_signal_emit (row, signals[SIGNAL_BUTTON_CLICKED], 0,
-		       GS_PLUGIN_REVIEW_ACTION_DOWNVOTE);
+		       GS_PLUGIN_ACTION_REVIEW_DOWNVOTE);
 }
 
 static void
@@ -188,7 +192,7 @@ gs_review_row_confirm_cb (GtkDialog *dialog, gint response_id, GsReviewRow *row)
 {
 	if (response_id == GTK_RESPONSE_YES) {
 		g_signal_emit (row, signals[SIGNAL_BUTTON_CLICKED], 0,
-			       GS_PLUGIN_REVIEW_ACTION_REPORT);
+			       GS_PLUGIN_ACTION_REVIEW_REPORT);
 	}
 	gtk_widget_destroy (GTK_WIDGET (dialog));
 }
@@ -242,14 +246,14 @@ static void
 gs_review_row_button_clicked_dismiss_cb (GtkButton *button, GsReviewRow *row)
 {
 	g_signal_emit (row, signals[SIGNAL_BUTTON_CLICKED], 0,
-		       GS_PLUGIN_REVIEW_ACTION_DISMISS);
+		       GS_PLUGIN_ACTION_REVIEW_DISMISS);
 }
 
 static void
 gs_review_row_button_clicked_remove_cb (GtkButton *button, GsReviewRow *row)
 {
 	g_signal_emit (row, signals[SIGNAL_BUTTON_CLICKED], 0,
-		       GS_PLUGIN_REVIEW_ACTION_REMOVE);
+		       GS_PLUGIN_ACTION_REVIEW_REMOVE);
 }
 
 AsReview *

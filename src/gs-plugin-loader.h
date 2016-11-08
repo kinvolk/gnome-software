@@ -27,7 +27,8 @@
 #include "gs-app.h"
 #include "gs-auth.h"
 #include "gs-category.h"
-#include "gs-plugin.h"
+#include "gs-plugin-event.h"
+#include "gs-plugin-private.h"
 
 G_BEGIN_DECLS
 
@@ -45,43 +46,6 @@ struct _GsPluginLoaderClass
 	void			(*updates_changed)	(GsPluginLoader	*plugin_loader);
 	void			(*reload)		(GsPluginLoader	*plugin_loader);
 };
-
-typedef enum {
-	GS_PLUGIN_LOADER_ACTION_PURCHASE,
-	GS_PLUGIN_LOADER_ACTION_INSTALL,
-	GS_PLUGIN_LOADER_ACTION_REMOVE,
-	GS_PLUGIN_LOADER_ACTION_UPDATE,
-	GS_PLUGIN_LOADER_ACTION_SET_RATING,
-	GS_PLUGIN_LOADER_ACTION_UPGRADE_DOWNLOAD,
-	GS_PLUGIN_LOADER_ACTION_UPGRADE_TRIGGER,
-	GS_PLUGIN_LOADER_ACTION_LAUNCH,
-	GS_PLUGIN_LOADER_ACTION_UPDATE_CANCEL,
-	GS_PLUGIN_LOADER_ACTION_ADD_SHORTCUT,
-	GS_PLUGIN_LOADER_ACTION_REMOVE_SHORTCUT,
-	GS_PLUGIN_LOADER_ACTION_LAST
-} GsPluginLoaderAction;
-
-/**
- * GsPluginReviewAction:
- * @GS_PLUGIN_REVIEW_ACTION_SUBMIT:	Submit a new review
- * @GS_PLUGIN_REVIEW_ACTION_UPVOTE:	Upvote an existing review
- * @GS_PLUGIN_REVIEW_ACTION_DOWNVOTE:	Downvote an existing review
- * @GS_PLUGIN_REVIEW_ACTION_REPORT:	Report an existing review
- * @GS_PLUGIN_REVIEW_ACTION_REMOVE:	Remove a review written by the user
- * @GS_PLUGIN_REVIEW_ACTION_DISMISS:	Dismiss (ignore) a review when moderating
- *
- * The review action.
- **/
-typedef enum {
-	GS_PLUGIN_REVIEW_ACTION_SUBMIT,
-	GS_PLUGIN_REVIEW_ACTION_UPVOTE,
-	GS_PLUGIN_REVIEW_ACTION_DOWNVOTE,
-	GS_PLUGIN_REVIEW_ACTION_REPORT,
-	GS_PLUGIN_REVIEW_ACTION_REMOVE,
-	GS_PLUGIN_REVIEW_ACTION_DISMISS,
-	/*< private >*/
-	GS_PLUGIN_REVIEW_ACTION_LAST
-} GsPluginReviewAction;
 
 typedef void	 (*GsPluginLoaderFinishedFunc)		(GsPluginLoader	*plugin_loader,
 							 GsApp		*app,
@@ -230,7 +194,7 @@ gboolean	 gs_plugin_loader_app_refine_finish	(GsPluginLoader	*plugin_loader,
 							 GError		**error);
 void		 gs_plugin_loader_app_action_async	(GsPluginLoader	*plugin_loader,
 							 GsApp		*app,
-							 GsPluginLoaderAction a,
+							 GsPluginAction	 a,
 							 GCancellable	*cancellable,
 							 GAsyncReadyCallback callback,
 							 gpointer	 user_data);
@@ -259,7 +223,7 @@ gboolean	 gs_plugin_loader_app_purchase_finish	(GsPluginLoader	*plugin_loader,
 void		 gs_plugin_loader_review_action_async	(GsPluginLoader	*plugin_loader,
 							 GsApp		*app,
 							 AsReview	*review,
-							 GsPluginReviewAction	 action,
+							 GsPluginAction	 action,
 							 GCancellable	*cancellable,
 							 GAsyncReadyCallback callback,
 							 gpointer	 user_data);
@@ -268,7 +232,7 @@ gboolean	 gs_plugin_loader_auth_action_finish	(GsPluginLoader	*plugin_loader,
 							 GError		**error);
 void		 gs_plugin_loader_auth_action_async	(GsPluginLoader	*plugin_loader,
 							 GsAuth		*auth,
-							 GsAuthAction	 action,
+							 GsPluginAction	 action,
 							 GCancellable	*cancellable,
 							 GAsyncReadyCallback callback,
 							 gpointer	 user_data);
@@ -282,10 +246,19 @@ void		 gs_plugin_loader_refresh_async		(GsPluginLoader	*plugin_loader,
 							 GAsyncReadyCallback callback,
 							 gpointer	 user_data);
 GsAppList	*gs_plugin_loader_get_pending		(GsPluginLoader	*plugin_loader);
+gboolean	 gs_plugin_loader_get_allow_updates	(GsPluginLoader	*plugin_loader);
 void		 gs_plugin_loader_set_network_status    (GsPluginLoader *plugin_loader,
 							 gboolean        online);
 gboolean	 gs_plugin_loader_get_plugin_supported	(GsPluginLoader	*plugin_loader,
 							 const gchar	*plugin_func);
+
+GPtrArray	*gs_plugin_loader_get_events		(GsPluginLoader	*plugin_loader);
+GsPluginEvent	*gs_plugin_loader_get_event_by_id	(GsPluginLoader	*plugin_loader,
+							 const gchar	*unique_id);
+GsPluginEvent	*gs_plugin_loader_get_event_default	(GsPluginLoader	*plugin_loader);
+void		 gs_plugin_loader_remove_events		(GsPluginLoader	*plugin_loader);
+
+AsProfile	*gs_plugin_loader_get_profile		(GsPluginLoader	*plugin_loader);
 
 G_END_DECLS
 

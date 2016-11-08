@@ -44,7 +44,7 @@ typedef struct
 	GCancellable		*cancellable;
 	gboolean		 cache_valid;
 	GsShell			*shell;
-	gint			 refresh_count;
+	gint			 action_cnt;
 	gboolean		 loading_featured;
 	gboolean		 loading_popular;
 	gboolean		 loading_popular_rotating;
@@ -53,7 +53,10 @@ typedef struct
 	gchar			*category_of_day;
 	GtkWidget		*search_button;
 	GHashTable		*category_hash;		/* id : GsCategory */
+	GSettings		*settings;
 
+	GtkWidget		*infobar_proprietary;
+	GtkWidget		*label_proprietary;
 	GtkWidget		*bin_featured;
 	GtkWidget		*box_overview;
 	GtkWidget		*box_popular;
@@ -121,6 +124,27 @@ filter_category (GsApp *app, gpointer user_data)
 }
 
 static void
+gs_shell_overview_decrement_action_cnt (GsShellOverview *self)
+{
+	GsShellOverviewPrivate *priv = gs_shell_overview_get_instance_private (self);
+
+	/* every job increcements this */
+	if (priv->action_cnt == 0) {
+		g_warning ("action_cnt already zero!");
+		return;
+	}
+	if (--priv->action_cnt > 0)
+		return;
+
+	/* all done */
+	priv->cache_valid = TRUE;
+	g_signal_emit (self, signals[SIGNAL_REFRESHED], 0);
+
+	/* seems a good place */
+	gs_shell_profile_dump (priv->shell);
+}
+
+static void
 gs_shell_overview_get_popular_cb (GObject *source_object,
 				  GAsyncResult *res,
 				  gpointer user_data)
@@ -139,7 +163,7 @@ gs_shell_overview_get_popular_cb (GObject *source_object,
 	gtk_widget_set_visible (priv->box_popular, list != NULL);
 	gtk_widget_set_visible (priv->popular_heading, list != NULL);
 	if (list == NULL) {
-		if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+		if (!g_error_matches (error, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_CANCELLED))
 			g_warning ("failed to get popular apps: %s", error->message);
 		goto out;
 	}
@@ -161,11 +185,7 @@ gs_shell_overview_get_popular_cb (GObject *source_object,
 
 out:
 	priv->loading_popular = FALSE;
-	priv->refresh_count--;
-	if (priv->refresh_count == 0) {
-		priv->cache_valid = TRUE;
-		g_signal_emit (self, signals[SIGNAL_REFRESHED], 0);
-	}
+	gs_shell_overview_decrement_action_cnt (self);
 }
 
 static void
@@ -206,7 +226,7 @@ gs_shell_overview_get_category_apps_cb (GObject *source_object,
 	/* get popular apps */
 	list = gs_plugin_loader_get_category_apps_finish (plugin_loader, res, &error);
 	if (list == NULL) {
-		if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+		if (g_error_matches (error, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_CANCELLED))
 			goto out;
 		g_warning ("failed to get category %s featured applications: %s",
 			   gs_category_get_id (load_data->category),
@@ -272,11 +292,7 @@ gs_shell_overview_get_category_apps_cb (GObject *source_object,
 out:
 	load_data_free (load_data);
 	priv->loading_popular_rotating = FALSE;
-	priv->refresh_count--;
-	if (priv->refresh_count == 0) {
-		priv->cache_valid = TRUE;
-		g_signal_emit (self, signals[SIGNAL_REFRESHED], 0);
-	}
+	gs_shell_overview_decrement_action_cnt (self);
 }
 
 static void
@@ -293,7 +309,7 @@ gs_shell_overview_get_featured_cb (GObject *source_object,
 	g_autoptr(GsAppList) list = NULL;
 
 	list = gs_plugin_loader_get_featured_finish (plugin_loader, res, &error);
-	if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+	if (g_error_matches (error, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_CANCELLED))
 		goto out;
 
 	if (g_getenv ("GNOME_SOFTWARE_FEATURED") == NULL) {
@@ -326,11 +342,7 @@ gs_shell_overview_get_featured_cb (GObject *source_object,
 
 out:
 	priv->loading_featured = FALSE;
-	priv->refresh_count--;
-	if (priv->refresh_count == 0) {
-		priv->cache_valid = TRUE;
-		g_signal_emit (self, signals[SIGNAL_REFRESHED], 0);
-	}
+	gs_shell_overview_decrement_action_cnt (self);
 }
 
 static void
@@ -363,7 +375,7 @@ gs_shell_overview_get_categories_cb (GObject *source_object,
 
 	list = gs_plugin_loader_get_categories_finish (plugin_loader, res, &error);
 	if (list == NULL) {
-		if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+		if (!g_error_matches (error, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_CANCELLED))
 			g_warning ("failed to get categories: %s", error->message);
 		goto out;
 	}
@@ -403,11 +415,7 @@ out:
 	gtk_widget_set_visible (priv->category_heading, added_cnt > 0);
 
 	priv->loading_categories = FALSE;
-	priv->refresh_count--;
-	if (priv->refresh_count == 0) {
-		priv->cache_valid = TRUE;
-		g_signal_emit (self, signals[SIGNAL_REFRESHED], 0);
-	}
+	gs_shell_overview_decrement_action_cnt (self);
 }
 
 static const gchar *
@@ -486,7 +494,7 @@ gs_shell_overview_load (GsShellOverview *self)
 						     priv->cancellable,
 						     gs_shell_overview_get_featured_cb,
 						     self);
-		priv->refresh_count++;
+		priv->action_cnt++;
 	}
 
 	if (!priv->loading_popular) {
@@ -497,7 +505,7 @@ gs_shell_overview_load (GsShellOverview *self)
 						    priv->cancellable,
 						    gs_shell_overview_get_popular_cb,
 						    self);
-		priv->refresh_count++;
+		priv->action_cnt++;
 	}
 
 	if (!priv->loading_popular_rotating) {
@@ -532,7 +540,7 @@ gs_shell_overview_load (GsShellOverview *self)
 								  priv->cancellable,
 								  gs_shell_overview_get_category_apps_cb,
 								  load_data);
-			priv->refresh_count++;
+			priv->action_cnt++;
 		}
 		priv->loading_popular_rotating = TRUE;
 	}
@@ -544,7 +552,7 @@ gs_shell_overview_load (GsShellOverview *self)
 						       priv->cancellable,
 						       gs_shell_overview_get_categories_cb,
 						       self);
-		priv->refresh_count++;
+		priv->action_cnt++;
 	}
 }
 
@@ -589,7 +597,7 @@ gs_shell_overview_switch_to (GsPage *page, gboolean scroll_up)
 
 	gs_grab_focus_when_mapped (priv->scrolledwindow_overview);
 
-	if (priv->cache_valid || priv->refresh_count > 0)
+	if (priv->cache_valid || priv->action_cnt > 0)
 		return;
 	gs_shell_overview_load (self);
 }
@@ -602,6 +610,128 @@ gs_shell_overview_categories_expander_cb (GtkButton *button, GsShellOverview *se
 	gtk_revealer_set_transition_duration (GTK_REVEALER (priv->categories_more), 250);
 	gtk_revealer_set_reveal_child (GTK_REVEALER (priv->categories_expander), FALSE);
 	gtk_revealer_set_reveal_child (GTK_REVEALER (priv->categories_more), TRUE);
+}
+
+static void
+g_shell_overview_get_sources_cb (GsPluginLoader *plugin_loader,
+				 GAsyncResult *res,
+				 GsShellOverview *self)
+{
+	guint i;
+	g_auto(GStrv) nonfree_ids = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GsAppList) list = NULL;
+	GsShellOverviewPrivate *priv = gs_shell_overview_get_instance_private (self);
+
+	/* get the results */
+	list = gs_plugin_loader_get_sources_finish (plugin_loader, res, &error);
+	if (list == NULL) {
+		if (g_error_matches (error,
+				     GS_PLUGIN_ERROR,
+				     GS_PLUGIN_ERROR_CANCELLED)) {
+			g_debug ("get sources cancelled");
+		} else {
+			g_warning ("failed to get sources: %s", error->message);
+		}
+		return;
+	}
+
+	/* enable each */
+	nonfree_ids = g_settings_get_strv (priv->settings, "nonfree-sources");
+	for (i = 0; nonfree_ids[i] != NULL; i++) {
+		GsApp *app;
+		g_autofree gchar *unique_id = NULL;
+
+		/* match the ID from GSettings to an actual GsApp */
+		unique_id = gs_utils_build_unique_id_kind (AS_APP_KIND_SOURCE,
+							   nonfree_ids[i]);
+		app = gs_app_list_lookup (list, unique_id);
+		if (app == NULL) {
+			g_warning ("no source for %s", unique_id);
+			continue;
+		}
+
+		/* depending on the new policy, add or remove the source */
+		if (g_settings_get_boolean (priv->settings, "show-nonfree-software")) {
+			if (gs_app_get_state (app) == AS_APP_STATE_AVAILABLE) {
+				gs_page_install_app (GS_PAGE (self), app,
+						     priv->cancellable);
+			}
+		} else {
+			if (gs_app_get_state (app) == AS_APP_STATE_INSTALLED) {
+				gs_page_remove_app (GS_PAGE (self), app,
+						    priv->cancellable);
+			}
+		}
+	}
+}
+
+static void
+g_shell_overview_rescan_proprietary_sources (GsShellOverview *self)
+{
+	GsShellOverviewPrivate *priv = gs_shell_overview_get_instance_private (self);
+	gs_plugin_loader_get_sources_async (priv->plugin_loader,
+					    GS_PLUGIN_REFINE_FLAGS_REQUIRE_SETUP_ACTION,
+					    priv->cancellable,
+					    (GAsyncReadyCallback) g_shell_overview_get_sources_cb,
+					    self);
+}
+
+static void
+g_shell_overview_proprietary_response_cb (GtkInfoBar *info_bar,
+					  gint response_id,
+					  GsShellOverview *self)
+{
+	GsShellOverviewPrivate *priv = gs_shell_overview_get_instance_private (self);
+	g_settings_set_boolean (priv->settings, "show-nonfree-prompt", FALSE);
+	if (response_id == GTK_RESPONSE_CLOSE) {
+		gtk_widget_hide (priv->infobar_proprietary);
+		return;
+	}
+	if (response_id != GTK_RESPONSE_YES)
+		return;
+	g_settings_set_boolean (priv->settings, "show-nonfree-software", TRUE);
+
+	/* actually call into the plugin loader and do the action */
+	g_shell_overview_rescan_proprietary_sources (self);
+}
+
+static void
+gs_shell_overview_refresh_proprietary (GsShellOverview *self)
+{
+	GsShellOverviewPrivate *priv = gs_shell_overview_get_instance_private (self);
+	g_auto(GStrv) nonfree_ids = NULL;
+
+	/* only show if never prompted and have nonfree repos */
+	nonfree_ids = g_settings_get_strv (priv->settings, "nonfree-sources");
+	if (g_settings_get_boolean (priv->settings, "show-nonfree-prompt") &&
+	    !g_settings_get_boolean (priv->settings, "show-nonfree-software") &&
+	    g_strv_length (nonfree_ids) > 0) {
+		g_autoptr(GString) str = g_string_new (NULL);
+		g_autofree gchar *uri = NULL;
+
+		/* get from GSettings, as some distros want to override this */
+		uri = g_settings_get_string (priv->settings, "nonfree-software-uri");
+
+		/* TRANSLATORS: this is the proprietary info bar */
+		g_string_append (str, _("Provides access to additional software, "
+					"including web browsers and games."));
+		g_string_append (str, " ");
+		/* TRANSLATORS: this is the proprietary info bar */
+		g_string_append (str, _("Proprietary software has restrictions "
+					"on use and access to source code."));
+		if (uri != NULL && uri[0] != '\0') {
+			g_string_append (str, "\n");
+			g_string_append_printf (str, "<a href=\"%s\">%s</a>",
+						/* TRANSLATORS: this is the clickable
+						 * link on the proprietary info bar */
+						uri, _("Find out more…"));
+		}
+		gtk_label_set_markup (GTK_LABEL (priv->label_proprietary), str->str);
+		gtk_widget_set_visible (priv->infobar_proprietary, TRUE);
+	} else {
+		gtk_widget_set_visible (priv->infobar_proprietary, FALSE);
+	}
 }
 
 void
@@ -624,6 +754,14 @@ gs_shell_overview_setup (GsShellOverview *self,
 	priv->cancellable = g_object_ref (cancellable);
 	priv->category_hash = g_hash_table_new_full (g_str_hash, g_str_equal,
 						     g_free, (GDestroyNotify) g_object_unref);
+
+	/* create info bar if not already dismissed in initial-setup */
+	gs_shell_overview_refresh_proprietary (self);
+	gtk_info_bar_add_button (GTK_INFO_BAR (priv->infobar_proprietary),
+				 /* TRANSLATORS: button to turn on proprietary software sources */
+				 _("Enable"), GTK_RESPONSE_YES);
+	g_signal_connect (priv->infobar_proprietary, "response",
+			  G_CALLBACK (g_shell_overview_proprietary_response_cb), self);
 
 	/* avoid a ref cycle */
 	priv->shell = shell;
@@ -657,9 +795,27 @@ gs_shell_overview_setup (GsShellOverview *self,
 }
 
 static void
+settings_changed_cb (GSettings *settings,
+		     const gchar *key,
+		     GsShellOverview *self)
+{
+	if (g_strcmp0 (key, "show-nonfree-software") == 0 ||
+	    g_strcmp0 (key, "show-nonfree-prompt") == 0 ||
+	    g_strcmp0 (key, "nonfree-software-uri") == 0 ||
+	    g_strcmp0 (key, "nonfree-sources") == 0) {
+		gs_shell_overview_refresh_proprietary (self);
+	}
+}
+
+static void
 gs_shell_overview_init (GsShellOverview *self)
 {
+	GsShellOverviewPrivate *priv = gs_shell_overview_get_instance_private (self);
 	gtk_widget_init_template (GTK_WIDGET (self));
+	priv->settings = g_settings_new ("org.gnome.software");
+	g_signal_connect (priv->settings, "changed",
+			  G_CALLBACK (settings_changed_cb),
+			  self);
 }
 
 static void
@@ -671,6 +827,7 @@ gs_shell_overview_dispose (GObject *object)
 	g_clear_object (&priv->builder);
 	g_clear_object (&priv->plugin_loader);
 	g_clear_object (&priv->cancellable);
+	g_clear_object (&priv->settings);
 	g_clear_pointer (&priv->category_of_day, g_free);
 	g_clear_pointer (&priv->category_hash, g_hash_table_unref);
 
@@ -710,6 +867,8 @@ gs_shell_overview_class_init (GsShellOverviewClass *klass)
 
 	gtk_widget_class_set_template_from_resource (widget_class, "/org/gnome/Software/gs-shell-overview.ui");
 
+	gtk_widget_class_bind_template_child_private (widget_class, GsShellOverview, infobar_proprietary);
+	gtk_widget_class_bind_template_child_private (widget_class, GsShellOverview, label_proprietary);
 	gtk_widget_class_bind_template_child_private (widget_class, GsShellOverview, bin_featured);
 	gtk_widget_class_bind_template_child_private (widget_class, GsShellOverview, box_overview);
 	gtk_widget_class_bind_template_child_private (widget_class, GsShellOverview, box_popular);

@@ -42,16 +42,8 @@ G_DECLARE_FINAL_TYPE (GsFlatpak, gs_flatpak, GS, FLATPAK, GObject)
 #define	gs_app_set_flatpak_branch(app,val)	gs_app_set_metadata(app,"flatpak::branch",val)
 #define	gs_app_set_flatpak_commit(app,val)	gs_app_set_metadata(app,"flatpak::commit",val)
 
-typedef enum {
-	GS_FLATPAK_SCOPE_SYSTEM,
-	GS_FLATPAK_SCOPE_USER
-} GsFlatpakScope;
-
-#define	GS_FLATPAK_SYSTEM_PREFIX	"flatpak"
-#define	GS_FLATPAK_USER_PREFIX		"user-flatpak"
-
 GsFlatpak	*gs_flatpak_new			(GsPlugin		*plugin,
-						 GsFlatpakScope		 scope);
+						 AsAppScope		 scope);
 gboolean	gs_flatpak_setup		(GsFlatpak		*self,
 						 GCancellable		*cancellable,
 						 GError			**error);
@@ -67,6 +59,10 @@ gboolean	gs_flatpak_add_updates		(GsFlatpak		*self,
 						 GsAppList		*list,
 						 GCancellable		*cancellable,
 						 GError			**error);
+gboolean	gs_flatpak_add_updates_pending	(GsFlatpak		*self,
+						 GsAppList		*list,
+						 GCancellable		*cancellable,
+						 GError			**error);
 gboolean	gs_flatpak_refresh		(GsFlatpak		*self,
 						 guint			cache_age,
 						 GsPluginRefreshFlags	flags,
@@ -75,6 +71,12 @@ gboolean	gs_flatpak_refresh		(GsFlatpak		*self,
 gboolean	gs_flatpak_refine_app		(GsFlatpak		*self,
 						 GsApp			*app,
 						 GsPluginRefineFlags	flags,
+						 GCancellable		*cancellable,
+						 GError			**error);
+gboolean	gs_flatpak_refine_wildcard	(GsFlatpak		*self,
+						 GsApp			*app,
+						 GsAppList		*list,
+						 GsPluginRefineFlags	 flags,
 						 GCancellable		*cancellable,
 						 GError			**error);
 gboolean	gs_flatpak_launch		(GsFlatpak		*self,
@@ -96,6 +98,28 @@ gboolean	gs_flatpak_update_app		(GsFlatpak		*self,
 gboolean	gs_flatpak_file_to_app		(GsFlatpak		*self,
 						 GsAppList		*list,
 						 GFile			*file,
+						 GCancellable		*cancellable,
+						 GError			**error);
+gboolean	gs_flatpak_search		(GsFlatpak		*self,
+						 gchar			**values,
+						 GsAppList		*list,
+						 GCancellable		*cancellable,
+						 GError			**error);
+gboolean	gs_flatpak_add_categories	(GsFlatpak		*self,
+						 GPtrArray		*list,
+						 GCancellable		*cancellable,
+						 GError			**error);
+gboolean	gs_flatpak_add_category_apps	(GsFlatpak		*self,
+						 GsCategory		*category,
+						 GsAppList		*list,
+						 GCancellable		*cancellable,
+						 GError			**error);
+gboolean	gs_flatpak_add_popular		(GsFlatpak		*self,
+						 GsAppList		*list,
+						 GCancellable		*cancellable,
+						 GError			**error);
+gboolean	gs_flatpak_add_featured		(GsFlatpak		*self,
+						 GsAppList		*list,
 						 GCancellable		*cancellable,
 						 GError			**error);
 

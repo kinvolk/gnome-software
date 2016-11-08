@@ -47,6 +47,7 @@
 #include <gio/gdesktopappinfo.h>
 #include <gdk/gdk.h>
 
+#include "gs-app-list-private.h"
 #include "gs-os-release.h"
 #include "gs-plugin-private.h"
 #include "gs-plugin.h"
@@ -63,6 +64,7 @@ typedef struct
 	GsPluginData		*data;			/* for gs-plugin-{name}.c */
 	GsPluginFlags		 flags;
 	SoupSession		*soup_session;
+	GsAppList		*global_cache;
 	GPtrArray		*rules[GS_PLUGIN_RULE_LAST];
 	gboolean		 enabled;
 	gchar			*locale;		/* allow-none */
@@ -77,6 +79,8 @@ typedef struct
 
 G_DEFINE_TYPE_WITH_PRIVATE (GsPlugin, gs_plugin, G_TYPE_OBJECT)
 
+G_DEFINE_QUARK (gs-plugin-error-quark, gs_plugin_error)
+
 enum {
 	PROP_0,
 	PROP_FLAGS,
@@ -87,6 +91,8 @@ enum {
 	SIGNAL_UPDATES_CHANGED,
 	SIGNAL_STATUS_CHANGED,
 	SIGNAL_RELOAD,
+	SIGNAL_REPORT_EVENT,
+	SIGNAL_ALLOW_UPDATES,
 	SIGNAL_LAST
 };
 
@@ -101,6 +107,8 @@ typedef const gchar	**(*GsPluginGetDepsFunc)	(GsPlugin	*plugin);
  * Converts the #GsPluginStatus enum to a string.
  *
  * Returns: the string representation, or "unknown"
+ *
+ * Since: 3.22
  **/
 const gchar *
 gs_plugin_status_to_string (GsPluginStatus status)
@@ -129,6 +137,8 @@ gs_plugin_status_to_string (GsPluginStatus status)
  * Creates a new plugin from an external module.
  *
  * Returns: the #GsPlugin or %NULL
+ *
+ * Since: 3.22
  **/
 GsPlugin *
 gs_plugin_create (const gchar *filename, GError **error)
@@ -186,12 +196,17 @@ gs_plugin_finalize (GObject *object)
 	g_free (priv->language);
 	g_rw_lock_clear (&priv->rwlock);
 	g_object_unref (priv->profile);
-	g_ptr_array_unref (priv->auth_array);
-	g_object_unref (priv->soup_session);
+	if (priv->auth_array != NULL)
+		g_ptr_array_unref (priv->auth_array);
+	if (priv->soup_session != NULL)
+		g_object_unref (priv->soup_session);
+	if (priv->global_cache != NULL)
+		g_object_unref (priv->global_cache);
 	g_hash_table_unref (priv->cache);
 	g_mutex_clear (&priv->cache_mutex);
 	g_mutex_clear (&priv->timer_mutex);
-	g_module_close (priv->module);
+	if (priv->module != NULL)
+		g_module_close (priv->module);
 }
 
 /**
@@ -202,6 +217,8 @@ gs_plugin_finalize (GObject *object)
  * been called.
  *
  * Returns: the #GsPluginData, or %NULL
+ *
+ * Since: 3.22
  **/
 GsPluginData *
 gs_plugin_get_data (GsPlugin *plugin)
@@ -222,6 +239,8 @@ gs_plugin_get_data (GsPlugin *plugin)
  * not be manually freed.
  *
  * Returns: the #GsPluginData, cleared to NUL butes
+ *
+ * Since: 3.22
  **/
 GsPluginData *
 gs_plugin_alloc_data (GsPlugin *plugin, gsize sz)
@@ -238,6 +257,8 @@ gs_plugin_alloc_data (GsPlugin *plugin, gsize sz)
  * @exclusive: if the plugin action should be performed exclusively
  *
  * Starts a plugin action.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_action_start (GsPlugin *plugin, gboolean exclusive)
@@ -247,13 +268,13 @@ gs_plugin_action_start (GsPlugin *plugin, gboolean exclusive)
 	/* lock plugin */
 	if (exclusive) {
 		g_rw_lock_writer_lock (&priv->rwlock);
-		priv->flags |= GS_PLUGIN_FLAGS_EXCLUSIVE;
+		gs_plugin_add_flags (plugin, GS_PLUGIN_FLAGS_EXCLUSIVE);
 	} else {
 		g_rw_lock_reader_lock (&priv->rwlock);
 	}
 
 	/* set plugin as SELF */
-	priv->flags |= GS_PLUGIN_FLAGS_RUNNING_SELF;
+	gs_plugin_add_flags (plugin, GS_PLUGIN_FLAGS_RUNNING_SELF);
 }
 
 static gboolean
@@ -264,7 +285,7 @@ gs_plugin_action_delay_cb (gpointer user_data)
 	g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&priv->timer_mutex);
 
 	g_debug ("plugin no longer recently active: %s", priv->name);
-	priv->flags &= ~(guint64) GS_PLUGIN_FLAGS_RECENT;
+	gs_plugin_remove_flags (plugin, GS_PLUGIN_FLAGS_RECENT);
 	priv->timer_id = 0;
 	return FALSE;
 }
@@ -274,6 +295,8 @@ gs_plugin_action_delay_cb (gpointer user_data)
  * @plugin: a #GsPlugin
  *
  * Stops an plugin action.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_action_stop (GsPlugin *plugin)
@@ -282,18 +305,18 @@ gs_plugin_action_stop (GsPlugin *plugin)
 	g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&priv->timer_mutex);
 
 	/* clear plugin as SELF */
-	priv->flags &= ~GS_PLUGIN_FLAGS_RUNNING_SELF;
+	gs_plugin_remove_flags (plugin, GS_PLUGIN_FLAGS_RUNNING_SELF);
 
 	/* unlock plugin */
 	if (priv->flags & GS_PLUGIN_FLAGS_EXCLUSIVE) {
 		g_rw_lock_writer_unlock (&priv->rwlock);
-		priv->flags &= ~GS_PLUGIN_FLAGS_EXCLUSIVE;
+		gs_plugin_remove_flags (plugin, GS_PLUGIN_FLAGS_EXCLUSIVE);
 	} else {
 		g_rw_lock_reader_unlock (&priv->rwlock);
 	}
 
 	/* unset this flag after 5 seconds */
-	priv->flags |= GS_PLUGIN_FLAGS_RECENT;
+	gs_plugin_add_flags (plugin, GS_PLUGIN_FLAGS_RECENT);
 	if (priv->timer_id > 0)
 		g_source_remove (priv->timer_id);
 	priv->timer_id = g_timeout_add (5000,
@@ -308,6 +331,8 @@ gs_plugin_action_stop (GsPlugin *plugin)
  * Gets the external module that backs the plugin.
  *
  * Returns: the #GModule, or %NULL
+ *
+ * Since: 3.22
  **/
 GModule *
 gs_plugin_get_module (GsPlugin *plugin)
@@ -323,6 +348,8 @@ gs_plugin_get_module (GsPlugin *plugin)
  * Gets if the plugin is enabled.
  *
  * Returns: %TRUE if enabled
+ *
+ * Since: 3.22
  **/
 gboolean
 gs_plugin_get_enabled (GsPlugin *plugin)
@@ -338,6 +365,8 @@ gs_plugin_get_enabled (GsPlugin *plugin)
  *
  * Enables or disables a plugin.
  * This is normally only called from gs_plugin_initialize().
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_set_enabled (GsPlugin *plugin, gboolean enabled)
@@ -353,6 +382,8 @@ gs_plugin_set_enabled (GsPlugin *plugin, gboolean enabled)
  * Gets the plugin name.
  *
  * Returns: a string, e.g. "fwupd"
+ *
+ * Since: 3.22
  **/
 const gchar *
 gs_plugin_get_name (GsPlugin *plugin)
@@ -368,6 +399,8 @@ gs_plugin_get_name (GsPlugin *plugin)
  * Gets the window scale factor.
  *
  * Returns: the factor, usually 1 for standard screens or 2 for HiDPI
+ *
+ * Since: 3.22
  **/
 guint
 gs_plugin_get_scale (GsPlugin *plugin)
@@ -382,6 +415,8 @@ gs_plugin_get_scale (GsPlugin *plugin)
  * @scale: the window scale factor, usually 1 for standard screens or 2 for HiDPI
  *
  * Sets the window scale factor.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_set_scale (GsPlugin *plugin, guint scale)
@@ -398,6 +433,8 @@ gs_plugin_set_scale (GsPlugin *plugin, guint scale)
  * numbers.
  *
  * Returns: the integer value
+ *
+ * Since: 3.22
  **/
 guint
 gs_plugin_get_order (GsPlugin *plugin)
@@ -413,6 +450,8 @@ gs_plugin_get_order (GsPlugin *plugin)
  *
  * Sets the plugin order, where higher numbers are run after lower
  * numbers.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_set_order (GsPlugin *plugin, guint order)
@@ -429,6 +468,8 @@ gs_plugin_set_order (GsPlugin *plugin, guint order)
  * multiple #GsApp's match a specific rule.
  *
  * Returns: the integer value
+ *
+ * Since: 3.22
  **/
 guint
 gs_plugin_get_priority (GsPlugin *plugin)
@@ -444,6 +485,8 @@ gs_plugin_get_priority (GsPlugin *plugin)
  *
  * Sets the plugin priority, where higher values will be chosen where
  * multiple #GsApp's match a specific rule.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_set_priority (GsPlugin *plugin, guint priority)
@@ -459,6 +502,8 @@ gs_plugin_set_priority (GsPlugin *plugin, guint priority)
  * Gets the user locale.
  *
  * Returns: the locale string, e.g. "en_GB"
+ *
+ * Since: 3.22
  **/
 const gchar *
 gs_plugin_get_locale (GsPlugin *plugin)
@@ -474,6 +519,8 @@ gs_plugin_get_locale (GsPlugin *plugin)
  * Gets the user language from the locale.
  *
  * Returns: the language string, e.g. "fr"
+ *
+ * Since: 3.22
  **/
 const gchar *
 gs_plugin_get_language (GsPlugin *plugin)
@@ -488,6 +535,8 @@ gs_plugin_get_language (GsPlugin *plugin)
  * @locale: a locale string, e.g. "en_GB"
  *
  * Sets the plugin locale.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_set_locale (GsPlugin *plugin, const gchar *locale)
@@ -503,6 +552,8 @@ gs_plugin_set_locale (GsPlugin *plugin, const gchar *locale)
  * @language: a language string, e.g. "fr"
  *
  * Sets the plugin language.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_set_language (GsPlugin *plugin, const gchar *language)
@@ -518,6 +569,8 @@ gs_plugin_set_language (GsPlugin *plugin, const gchar *language)
  * @auth_array: (element-type GsAuth): an array
  *
  * Sets the authentication objects that can be added by the plugin.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_set_auth_array (GsPlugin *plugin, GPtrArray *auth_array)
@@ -532,6 +585,8 @@ gs_plugin_set_auth_array (GsPlugin *plugin, GPtrArray *auth_array)
  * @auth: a #GsAuth
  *
  * Adds an authentication object that can be used for all the plugins.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_add_auth (GsPlugin *plugin, GsAuth *auth)
@@ -548,6 +603,8 @@ gs_plugin_add_auth (GsPlugin *plugin, GsAuth *auth)
  * Gets a specific authentication object.
  *
  * Returns: the #GsAuth, or %NULL if not found
+ *
+ * Since: 3.22
  **/
 GsAuth *
 gs_plugin_get_auth_by_id (GsPlugin *plugin, const gchar *provider_id)
@@ -573,6 +630,8 @@ gs_plugin_get_auth_by_id (GsPlugin *plugin, const gchar *provider_id)
  * output.
  *
  * Returns: the #AsProfile
+ *
+ * Since: 3.22
  **/
 AsProfile *
 gs_plugin_get_profile (GsPlugin *plugin)
@@ -587,6 +646,8 @@ gs_plugin_get_profile (GsPlugin *plugin)
  * @profile: a #AsProfile
  *
  * Sets the profile object to be used for the plugin.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_set_profile (GsPlugin *plugin, AsProfile *profile)
@@ -602,6 +663,8 @@ gs_plugin_set_profile (GsPlugin *plugin, AsProfile *profile)
  * Gets the soup session that plugins can use when downloading.
  *
  * Returns: the #SoupSession
+ *
+ * Since: 3.22
  **/
 SoupSession *
 gs_plugin_get_soup_session (GsPlugin *plugin)
@@ -616,12 +679,30 @@ gs_plugin_get_soup_session (GsPlugin *plugin)
  * @soup_session: a #SoupSession
  *
  * Sets the soup session that plugins will use when downloading.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_set_soup_session (GsPlugin *plugin, SoupSession *soup_session)
 {
 	GsPluginPrivate *priv = gs_plugin_get_instance_private (plugin);
 	g_set_object (&priv->soup_session, soup_session);
+}
+
+/**
+ * gs_plugin_set_global_cache:
+ * @plugin: a #GsPlugin
+ * @global_cache: a #GsAppList
+ *
+ * Sets the global cache that plugins can opt to use.
+ *
+ * Since: 3.22
+ **/
+void
+gs_plugin_set_global_cache (GsPlugin *plugin, GsAppList *global_cache)
+{
+	GsPluginPrivate *priv = gs_plugin_get_instance_private (plugin);
+	g_set_object (&priv->global_cache, global_cache);
 }
 
 /**
@@ -632,6 +713,8 @@ gs_plugin_set_soup_session (GsPlugin *plugin, SoupSession *soup_session)
  * Finds out if a plugin has a specific flag set.
  *
  * Returns: TRUE if the flag is set
+ *
+ * Since: 3.22
  **/
 gboolean
 gs_plugin_has_flags (GsPlugin *plugin, GsPluginFlags flags)
@@ -641,20 +724,53 @@ gs_plugin_has_flags (GsPlugin *plugin, GsPluginFlags flags)
 }
 
 /**
+ * gs_plugin_add_flags:
+ * @plugin: a #GsPlugin
+ * @flags: a #GsPluginFlags, e.g. %GS_PLUGIN_FLAGS_RUNNING_SELF
+ *
+ * Adds specific flags to the plugin.
+ *
+ * Since: 3.22
+ **/
+void
+gs_plugin_add_flags (GsPlugin *plugin, GsPluginFlags flags)
+{
+	GsPluginPrivate *priv = gs_plugin_get_instance_private (plugin);
+	priv->flags |= flags;
+}
+
+/**
+ * gs_plugin_remove_flags:
+ * @plugin: a #GsPlugin
+ * @flags: a #GsPluginFlags, e.g. %GS_PLUGIN_FLAGS_RUNNING_SELF
+ *
+ * Removes specific flags from the plugin.
+ *
+ * Since: 3.22
+ **/
+void
+gs_plugin_remove_flags (GsPlugin *plugin, GsPluginFlags flags)
+{
+	GsPluginPrivate *priv = gs_plugin_get_instance_private (plugin);
+	priv->flags &= ~flags;
+}
+
+/**
  * gs_plugin_set_running_other:
  * @plugin: a #GsPlugin
  * @running_other: %TRUE if another plugin is running
  *
  * Inform the plugin that another plugin is running in the loader.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_set_running_other (GsPlugin *plugin, gboolean running_other)
 {
-	GsPluginPrivate *priv = gs_plugin_get_instance_private (plugin);
 	if (running_other)
-		priv->flags |= GS_PLUGIN_FLAGS_RUNNING_OTHER;
+		gs_plugin_add_flags (plugin, GS_PLUGIN_FLAGS_RUNNING_OTHER);
 	else
-		priv->flags &= ~GS_PLUGIN_FLAGS_RUNNING_OTHER;
+		gs_plugin_remove_flags (plugin, GS_PLUGIN_FLAGS_RUNNING_OTHER);
 }
 
 /**
@@ -669,6 +785,8 @@ gs_plugin_set_running_other (GsPlugin *plugin, gboolean running_other)
  *
  * NOTE: The depsolver is iterative and may not solve overly-complicated rules;
  * If depsolving fails then gnome-software will not start.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_add_rule (GsPlugin *plugin, GsPluginRule rule, const gchar *name)
@@ -685,6 +803,8 @@ gs_plugin_add_rule (GsPlugin *plugin, GsPluginRule rule, const gchar *name)
  * Gets the plugin IDs that should be run after this plugin.
  *
  * Returns: (element-type utf8) (transfer none): the list of plugin names, e.g. ['appstream']
+ *
+ * Since: 3.22
  **/
 GPtrArray *
 gs_plugin_get_rules (GsPlugin *plugin, GsPluginRule rule)
@@ -701,6 +821,8 @@ gs_plugin_get_rules (GsPlugin *plugin, GsPluginRule rule)
  * Checks if the distro is compatible.
  *
  * Returns: %TRUE if compatible
+ *
+ * Since: 3.22
  **/
 gboolean
 gs_plugin_check_distro_id (GsPlugin *plugin, const gchar *distro_id)
@@ -754,6 +876,8 @@ gs_plugin_status_update_cb (gpointer user_data)
  * @status: a #GsPluginStatus, e.g. %GS_PLUGIN_STATUS_DOWNLOADING
  *
  * Update the state of the plugin so any UI can be updated.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_status_update (GsPlugin *plugin, GsApp *app, GsPluginStatus status)
@@ -794,6 +918,8 @@ gs_plugin_app_launch_cb (gpointer user_data)
  * Launches the application using GAppInfo.
  *
  * Returns: %TRUE for success
+ *
+ * Since: 3.22
  **/
 gboolean
 gs_plugin_app_launch (GsPlugin *plugin, GsApp *app, GError **error)
@@ -801,7 +927,7 @@ gs_plugin_app_launch (GsPlugin *plugin, GsApp *app, GError **error)
 	const gchar *desktop_id;
 	g_autoptr(GAppInfo) appinfo = NULL;
 
-	desktop_id = gs_app_get_id_no_prefix (app);
+	desktop_id = gs_app_get_id (app);
 	if (desktop_id == NULL) {
 		g_set_error (error,
 			     GS_PLUGIN_ERROR,
@@ -840,6 +966,8 @@ gs_plugin_updates_changed_cb (gpointer user_data)
  *
  * Emit a signal that tells the plugin loader that the list of updates
  * may have changed.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_updates_changed (GsPlugin *plugin)
@@ -864,6 +992,8 @@ gs_plugin_reload_cb (gpointer user_data)
  * gnashing of teeth.
  *
  * Plugins should not call this unless absolutely required.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_reload (GsPlugin *plugin)
@@ -932,6 +1062,8 @@ gs_plugin_download_chunk_cb (SoupMessage *msg, SoupBuffer *chunk,
  * Downloads data.
  *
  * Returns: the downloaded data, or %NULL
+ *
+ * Since: 3.22
  **/
 GBytes *
 gs_plugin_download_data (GsPlugin *plugin,
@@ -965,7 +1097,7 @@ gs_plugin_download_data (GsPlugin *plugin,
 		}
 		g_set_error (error,
 			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
+			     GS_PLUGIN_ERROR_DOWNLOAD_FAILED,
 			     "failed to download %s: %s",
 			     uri, str->str);
 		return NULL;
@@ -986,6 +1118,8 @@ gs_plugin_download_data (GsPlugin *plugin,
  * Downloads data and saves it to a file.
  *
  * Returns: %TRUE for success
+ *
+ * Since: 3.22
  **/
 gboolean
 gs_plugin_download_file (GsPlugin *plugin,
@@ -1021,7 +1155,7 @@ gs_plugin_download_file (GsPlugin *plugin,
 		}
 		g_set_error (error,
 			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
+			     GS_PLUGIN_ERROR_DOWNLOAD_FAILED,
 			     "failed to download %s: %s",
 			     uri, str->str);
 		return FALSE;
@@ -1032,7 +1166,7 @@ gs_plugin_download_file (GsPlugin *plugin,
 				  &error_local)) {
 		g_set_error (error,
 			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
+			     GS_PLUGIN_ERROR_WRITE_FAILED,
 			     "Failed to save file: %s",
 			     error_local->message);
 		return FALSE;
@@ -1048,6 +1182,8 @@ gs_plugin_download_file (GsPlugin *plugin,
  * Looks up an application object from the per-plugin cache
  *
  * Returns: (transfer full) (nullable): the #GsApp, or %NULL
+ *
+ * Since: 3.22
  **/
 GsApp *
 gs_plugin_cache_lookup (GsPlugin *plugin, const gchar *key)
@@ -1059,20 +1195,63 @@ gs_plugin_cache_lookup (GsPlugin *plugin, const gchar *key)
 	g_return_val_if_fail (GS_IS_PLUGIN (plugin), NULL);
 	g_return_val_if_fail (key != NULL, NULL);
 
-	app = g_hash_table_lookup (priv->cache, key);
+	/* global, so using a unique_id */
+	if (gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_GLOBAL_CACHE)) {
+		if (!as_utils_unique_id_valid (key)) {
+			g_critical ("key %s is not a unique_id", key);
+			return NULL;
+		}
+		app = gs_app_list_lookup (priv->global_cache, key);
+	} else {
+		app = g_hash_table_lookup (priv->cache, key);
+	}
 	if (app == NULL)
 		return NULL;
 	return g_object_ref (app);
 }
 
 /**
+ * gs_plugin_cache_remove:
+ * @plugin: a #GsPlugin
+ * @key: a key which matches
+ *
+ * Removes an application from the per-plugin cache.
+ *
+ * Since: 3.22
+ **/
+void
+gs_plugin_cache_remove (GsPlugin *plugin, const gchar *key)
+{
+	GsPluginPrivate *priv = gs_plugin_get_instance_private (plugin);
+
+	g_return_if_fail (GS_IS_PLUGIN (plugin));
+	g_return_if_fail (key != NULL);
+
+	/* global, so using internal unique_id */
+	if (gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_GLOBAL_CACHE)) {
+		GsApp *app_tmp;
+		if (!as_utils_unique_id_valid (key)) {
+			g_critical ("key %s is not a unique_id", key);
+			return;
+		}
+		app_tmp = gs_app_list_lookup (priv->global_cache, key);
+		if (app_tmp != NULL)
+			gs_app_list_remove (priv->global_cache, app_tmp);
+		return;
+	}
+	g_hash_table_remove (priv->cache, key);
+}
+
+/**
  * gs_plugin_cache_add:
  * @plugin: a #GsPlugin
- * @key: a string
+ * @key: a string, or %NULL if the unique ID should be used
  * @app: a #GsApp
  *
  * Adds an application to the per-plugin cache. This is optional,
  * and the plugin can use the cache however it likes.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_cache_add (GsPlugin *plugin, const gchar *key, GsApp *app)
@@ -1081,8 +1260,21 @@ gs_plugin_cache_add (GsPlugin *plugin, const gchar *key, GsApp *app)
 	g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&priv->cache_mutex);
 
 	g_return_if_fail (GS_IS_PLUGIN (plugin));
-	g_return_if_fail (key != NULL);
 	g_return_if_fail (GS_IS_APP (app));
+
+	/* default */
+	if (key == NULL)
+		key = gs_app_get_unique_id (app);
+
+	/* global, so using internal unique_id */
+	if (gs_plugin_has_flags (plugin, GS_PLUGIN_FLAGS_GLOBAL_CACHE)) {
+		if (!as_utils_unique_id_valid (key)) {
+			g_critical ("key %s is not a unique_id", key);
+			return;
+		}
+		gs_app_list_add (priv->global_cache, app);
+		return;
+	}
 
 	if (g_hash_table_lookup (priv->cache, key) == app)
 		return;
@@ -1100,6 +1292,8 @@ gs_plugin_cache_add (GsPlugin *plugin, const gchar *key, GsApp *app)
  *
  * Most plugins do not need to call this funtion; if a suitable cache
  * key is being used the old cache item can remain.
+ *
+ * Since: 3.22
  **/
 void
 gs_plugin_cache_invalidate (GsPlugin *plugin)
@@ -1110,6 +1304,180 @@ gs_plugin_cache_invalidate (GsPlugin *plugin)
 	g_return_if_fail (GS_IS_PLUGIN (plugin));
 
 	g_hash_table_remove_all (priv->cache);
+}
+
+/**
+ * gs_plugin_report_event:
+ * @plugin: a #GsPlugin
+ * @event: a #GsPluginEvent
+ *
+ * Report a non-fatal event to the UI. Plugins should not assume that a
+ * specific event is actually shown to the user as it may be ignored
+ * automatically.
+ *
+ * Since: 3.24
+ **/
+void
+gs_plugin_report_event (GsPlugin *plugin, GsPluginEvent *event)
+{
+	g_return_if_fail (GS_IS_PLUGIN (plugin));
+	g_return_if_fail (GS_IS_PLUGIN_EVENT (event));
+	g_signal_emit (plugin, signals[SIGNAL_REPORT_EVENT], 0, event);
+}
+
+/**
+ * gs_plugin_set_allow_updates:
+ * @plugin: a #GsPlugin
+ * @allow_updates: boolean
+ *
+ * This allows plugins to inhibit the showing of the updates panel.
+ * This will typically be used when the required permissions are not possible
+ * to obtain, or when a LiveUSB image is low on space.
+ *
+ * By default, the updates panel is shown so plugins do not need to call this
+ * function unless they called gs_plugin_set_allow_updates() with %FALSE.
+ *
+ * Since: 3.24
+ **/
+void
+gs_plugin_set_allow_updates (GsPlugin *plugin, gboolean allow_updates)
+{
+	g_return_if_fail (GS_IS_PLUGIN (plugin));
+	g_signal_emit (plugin, signals[SIGNAL_ALLOW_UPDATES], 0, allow_updates);
+}
+
+/**
+ * gs_plugin_error_to_string:
+ * @error: a #GsPluginError, e.g. %GS_PLUGIN_ERROR_NO_NETWORK
+ *
+ * Converts the enumerated error to a string.
+ *
+ * Returns: a string, or %NULL for invalid
+ **/
+const gchar *
+gs_plugin_error_to_string (GsPluginError error)
+{
+	if (error == GS_PLUGIN_ERROR_FAILED)
+		return "failed";
+	if (error == GS_PLUGIN_ERROR_NOT_SUPPORTED)
+		return "not-supported";
+	if (error == GS_PLUGIN_ERROR_CANCELLED)
+		return "cancelled";
+	if (error == GS_PLUGIN_ERROR_NO_NETWORK)
+		return "no-network";
+	if (error == GS_PLUGIN_ERROR_NO_SECURITY)
+		return "no-security";
+	if (error == GS_PLUGIN_ERROR_NO_SPACE)
+		return "no-space";
+	if (error == GS_PLUGIN_ERROR_AUTH_REQUIRED)
+		return "auth-required";
+	if (error == GS_PLUGIN_ERROR_AUTH_INVALID)
+		return "auth-invalid";
+	if (error == GS_PLUGIN_ERROR_PIN_REQUIRED)
+		return "pin-required";
+	if (error == GS_PLUGIN_ERROR_ACCOUNT_SUSPENDED)
+		return "account-suspended";
+	if (error == GS_PLUGIN_ERROR_ACCOUNT_DEACTIVATED)
+		return "account-deactivated";
+	if (error == GS_PLUGIN_ERROR_PLUGIN_DEPSOLVE_FAILED)
+		return "plugin-depsolve-failed";
+	if (error == GS_PLUGIN_ERROR_DOWNLOAD_FAILED)
+		return "download-failed";
+	if (error == GS_PLUGIN_ERROR_WRITE_FAILED)
+		return "write-failed";
+	if (error == GS_PLUGIN_ERROR_INVALID_FORMAT)
+		return "invalid-format";
+	if (error == GS_PLUGIN_ERROR_DELETE_FAILED)
+		return "delete-failed";
+	return NULL;
+}
+
+/**
+ * gs_plugin_action_to_string:
+ * @action: a #GsPluginAction, e.g. %GS_PLUGIN_ERROR_NO_NETWORK
+ *
+ * Converts the enumerated action to a string.
+ *
+ * Returns: a string, or %NULL for invalid
+ **/
+const gchar *
+gs_plugin_action_to_string (GsPluginAction action)
+{
+	if (action == GS_PLUGIN_ACTION_UNKNOWN)
+		return "unknown";
+	if (action == GS_PLUGIN_ACTION_SETUP)
+		return "setup";
+	if (action == GS_PLUGIN_ACTION_INSTALL)
+		return "install";
+	if (action == GS_PLUGIN_ACTION_REMOVE)
+		return "remove";
+	if (action == GS_PLUGIN_ACTION_UPDATE)
+		return "update";
+	if (action == GS_PLUGIN_ACTION_SET_RATING)
+		return "set-rating";
+	if (action == GS_PLUGIN_ACTION_UPGRADE_DOWNLOAD)
+		return "upgrade-download";
+	if (action == GS_PLUGIN_ACTION_UPGRADE_TRIGGER)
+		return "upgrade-trigger";
+	if (action == GS_PLUGIN_ACTION_LAUNCH)
+		return "launch";
+	if (action == GS_PLUGIN_ACTION_UPDATE_CANCEL)
+		return "update-cancel";
+	if (action == GS_PLUGIN_ACTION_ADD_SHORTCUT)
+		return "add-shortcut";
+	if (action == GS_PLUGIN_ACTION_REMOVE_SHORTCUT)
+		return "remove-shortcut";
+	if (action == GS_PLUGIN_ACTION_REVIEW_SUBMIT)
+		return "review-submit";
+	if (action == GS_PLUGIN_ACTION_REVIEW_UPVOTE)
+		return "review-upvote";
+	if (action == GS_PLUGIN_ACTION_REVIEW_DOWNVOTE)
+		return "review-downvote";
+	if (action == GS_PLUGIN_ACTION_REVIEW_REPORT)
+		return "review-report";
+	if (action == GS_PLUGIN_ACTION_REVIEW_REMOVE)
+		return "review-remove";
+	if (action == GS_PLUGIN_ACTION_REVIEW_DISMISS)
+		return "review-dismiss";
+	if (action == GS_PLUGIN_ACTION_GET_UPDATES)
+		return "get-updates";
+	if (action == GS_PLUGIN_ACTION_GET_DISTRO_UPDATES)
+		return "get-distro-updates";
+	if (action == GS_PLUGIN_ACTION_GET_UNVOTED_REVIEWS)
+		return "get-unvoted-reviews";
+	if (action == GS_PLUGIN_ACTION_GET_SOURCES)
+		return "get-sources";
+	if (action == GS_PLUGIN_ACTION_GET_INSTALLED)
+		return "get-installed";
+	if (action == GS_PLUGIN_ACTION_GET_POPULAR)
+		return "get-popular";
+	if (action == GS_PLUGIN_ACTION_GET_FEATURED)
+		return "get-featured";
+	if (action == GS_PLUGIN_ACTION_SEARCH)
+		return "search";
+	if (action == GS_PLUGIN_ACTION_SEARCH_FILES)
+		return "search-files";
+	if (action == GS_PLUGIN_ACTION_SEARCH_PROVIDES)
+		return "search-provides";
+	if (action == GS_PLUGIN_ACTION_GET_CATEGORIES)
+		return "get-categories";
+	if (action == GS_PLUGIN_ACTION_GET_CATEGORY_APPS)
+		return "get-category-apps";
+	if (action == GS_PLUGIN_ACTION_REFINE)
+		return "refine";
+	if (action == GS_PLUGIN_ACTION_REFRESH)
+		return "refresh";
+	if (action == GS_PLUGIN_ACTION_FILE_TO_APP)
+		return "file-to-app";
+	if (action == GS_PLUGIN_ACTION_AUTH_LOGIN)
+		return "auth-login";
+	if (action == GS_PLUGIN_ACTION_AUTH_LOGOUT)
+		return "auth-logout";
+	if (action == GS_PLUGIN_ACTION_AUTH_REGISTER)
+		return "auth-register";
+	if (action == GS_PLUGIN_ACTION_AUTH_LOST_PASSWORD)
+		return "auth-lost-password";
+	return NULL;
 }
 
 static void
@@ -1176,6 +1544,20 @@ gs_plugin_class_init (GsPluginClass *klass)
 			      G_STRUCT_OFFSET (GsPluginClass, reload),
 			      NULL, NULL, g_cclosure_marshal_VOID__VOID,
 			      G_TYPE_NONE, 0);
+
+	signals [SIGNAL_REPORT_EVENT] =
+		g_signal_new ("report-event",
+			      G_TYPE_FROM_CLASS (object_class), G_SIGNAL_RUN_LAST,
+			      G_STRUCT_OFFSET (GsPluginClass, report_event),
+			      NULL, NULL, g_cclosure_marshal_generic,
+			      G_TYPE_NONE, 1, GS_TYPE_PLUGIN_EVENT);
+
+	signals [SIGNAL_ALLOW_UPDATES] =
+		g_signal_new ("allow-updates",
+			      G_TYPE_FROM_CLASS (object_class), G_SIGNAL_RUN_LAST,
+			      G_STRUCT_OFFSET (GsPluginClass, allow_updates),
+			      NULL, NULL, g_cclosure_marshal_VOID__BOOLEAN,
+			      G_TYPE_NONE, 1, G_TYPE_BOOLEAN);
 }
 
 static void
@@ -1190,8 +1572,8 @@ gs_plugin_init (GsPlugin *plugin)
 	priv->enabled = TRUE;
 	priv->scale = 1;
 	priv->profile = as_profile_new ();
-	priv->cache = g_hash_table_new_full (g_str_hash,
-					     g_str_equal,
+	priv->cache = g_hash_table_new_full ((GHashFunc) as_utils_unique_id_hash,
+					     (GEqualFunc) as_utils_unique_id_equal,
 					     g_free,
 					     (GDestroyNotify) g_object_unref);
 	g_mutex_init (&priv->cache_mutex);
@@ -1205,6 +1587,8 @@ gs_plugin_init (GsPlugin *plugin)
  * Creates a new plugin.
  *
  * Returns: a #GsPlugin
+ *
+ * Since: 3.22
  **/
 GsPlugin *
 gs_plugin_new (void)

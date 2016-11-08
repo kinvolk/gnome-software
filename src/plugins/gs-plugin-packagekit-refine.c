@@ -83,12 +83,8 @@ gs_plugin_destroy (GsPlugin *plugin)
 void
 gs_plugin_adopt_app (GsPlugin *plugin, GsApp *app)
 {
-	const gchar *tmp;
-
-	/* this was installed system-wide and picked up by AppStream */
-	tmp = gs_app_get_metadata_item (app, "appstream::source-file");
-	if (tmp != NULL && g_str_has_prefix (tmp, "/usr/share/") &&
-	    gs_app_get_source_default (app) != NULL) {
+	if (gs_app_get_bundle_kind (app) == AS_BUNDLE_KIND_PACKAGE &&
+	    gs_app_get_scope (app) == AS_APP_SCOPE_SYSTEM) {
 		gs_app_set_management_plugin (app, "packagekit");
 		return;
 	}
@@ -229,7 +225,6 @@ gs_plugin_packagekit_resolve_packages_app (GsPlugin *plugin,
 		/* we have less packages returned than source packages */
 		tmp = gs_app_to_string (app);
 		g_debug ("Failed to find all packages for:\n%s", tmp);
-		gs_app_set_kind (app, AS_APP_KIND_UNKNOWN);
 		gs_app_set_state (app, AS_APP_STATE_UNAVAILABLE);
 	}
 }
@@ -257,9 +252,17 @@ gs_plugin_packagekit_resolve_packages (GsPlugin *plugin,
 		sources = gs_app_get_sources (app);
 		for (j = 0; j < sources->len; j++) {
 			pkgname = g_ptr_array_index (sources, j);
+			if (pkgname == NULL || pkgname[0] == '\0') {
+				g_warning ("invalid pkgname '%s' for %s",
+					   pkgname,
+					   gs_app_get_unique_id (app));
+				continue;
+			}
 			g_ptr_array_add (package_ids, g_strdup (pkgname));
 		}
 	}
+	if (package_ids->len == 0)
+		return TRUE;
 	g_ptr_array_add (package_ids, NULL);
 
 	data.app = NULL;
@@ -578,6 +581,8 @@ gs_plugin_packagekit_refine_update_urgency (GsPlugin *plugin,
 	for (i = 0; i < gs_app_list_length (list); i++) {
 		g_autoptr (PkPackage) pkg = NULL;
 		app = gs_app_list_index (list, i);
+		if (gs_app_has_quirk (app, AS_APP_QUIRK_MATCH_ANY_PREFIX))
+			continue;
 		package_id = gs_app_get_source_id_default (app);
 		if (package_id == NULL)
 			continue;
@@ -647,6 +652,8 @@ gs_plugin_refine_require_details (GsPlugin *plugin,
 	list_tmp = gs_app_list_new ();
 	for (i = 0; i < gs_app_list_length (list); i++) {
 		app = gs_app_list_index (list, i);
+		if (gs_app_has_quirk (app, AS_APP_QUIRK_MATCH_ANY_PREFIX))
+			continue;
 		if (gs_app_get_kind (app) == AS_APP_KIND_WEB_APP)
 			continue;
 		if (g_strcmp0 (gs_app_get_management_plugin (app), "packagekit") != 0)
@@ -819,6 +826,8 @@ gs_plugin_refine (GsPlugin *plugin,
 	resolve_all = gs_app_list_new ();
 	for (i = 0; i < gs_app_list_length (list); i++) {
 		app = gs_app_list_index (list, i);
+		if (gs_app_has_quirk (app, AS_APP_QUIRK_MATCH_ANY_PREFIX))
+			continue;
 		if (gs_app_get_kind (app) == AS_APP_KIND_WEB_APP)
 			continue;
 		tmp = gs_app_get_management_plugin (app);
@@ -855,7 +864,12 @@ gs_plugin_refine (GsPlugin *plugin,
 		if ((flags & GS_PLUGIN_REFINE_FLAGS_REQUIRE_SETUP_ACTION) == 0)
 			continue;
 		app = gs_app_list_index (list, i);
+		if (gs_app_has_quirk (app, AS_APP_QUIRK_MATCH_ANY_PREFIX))
+			continue;
 		if (gs_app_get_source_id_default (app) != NULL)
+			continue;
+		tmp = gs_app_get_management_plugin (app);
+		if (tmp != NULL && g_strcmp0 (tmp, "packagekit") != 0)
 			continue;
 		tmp = gs_app_get_id (app);
 		if (tmp == NULL)
@@ -892,6 +906,8 @@ gs_plugin_refine (GsPlugin *plugin,
 	updatedetails_all = gs_app_list_new ();
 	for (i = 0; i < gs_app_list_length (list); i++) {
 		app = gs_app_list_index (list, i);
+		if (gs_app_has_quirk (app, AS_APP_QUIRK_MATCH_ANY_PREFIX))
+			continue;
 		if (gs_app_get_state (app) != AS_APP_STATE_UPDATABLE)
 			continue;
 		tmp = gs_app_get_management_plugin (app);
@@ -930,4 +946,26 @@ gs_plugin_refine (GsPlugin *plugin,
 	}
 out:
 	return ret;
+}
+
+gboolean
+gs_plugin_refine_app (GsPlugin *plugin,
+		      GsApp *app,
+		      GsPluginRefineFlags flags,
+		      GCancellable *cancellable,
+		      GError **error)
+{
+	g_autoptr(AsProfileTask) ptask = NULL;
+
+	/* only process this app if was created by this plugin */
+	if (g_strcmp0 (gs_app_get_management_plugin (app), "packagekit") != 0)
+		return TRUE;
+
+	/* the scope is always system-wide */
+	if (gs_app_get_scope (app) == AS_APP_SCOPE_UNKNOWN)
+		gs_app_set_scope (app, AS_APP_SCOPE_SYSTEM);
+	if (gs_app_get_bundle_kind (app) == AS_BUNDLE_KIND_UNKNOWN)
+		gs_app_set_bundle_kind (app, AS_BUNDLE_KIND_PACKAGE);
+
+	return TRUE;
 }

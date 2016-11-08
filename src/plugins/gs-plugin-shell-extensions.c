@@ -43,6 +43,7 @@
 struct GsPluginData {
 	GDBusProxy	*proxy;
 	gchar		*shell_version;
+	GsApp		*cached_origin;
 };
 
 typedef enum {
@@ -65,7 +66,19 @@ typedef enum {
 void
 gs_plugin_initialize (GsPlugin *plugin)
 {
-	gs_plugin_alloc_data (plugin, sizeof(GsPluginData));
+	GsPluginData *priv = gs_plugin_alloc_data (plugin, sizeof(GsPluginData));
+
+	/* add source */
+	priv->cached_origin = gs_app_new (gs_plugin_get_name (plugin));
+	gs_app_set_kind (priv->cached_origin, AS_APP_KIND_SOURCE);
+	gs_app_set_origin_hostname (priv->cached_origin, SHELL_EXTENSIONS_API_URI);
+	gs_app_set_origin_ui (priv->cached_origin, "GNOME Shell Extensions");
+
+	/* add the source to the plugin cache which allows us to match the
+	 * unique ID to a GsApp when creating an event */
+	gs_plugin_cache_add (plugin,
+			     gs_app_get_unique_id (priv->cached_origin),
+			     priv->cached_origin);
 }
 
 void
@@ -75,6 +88,7 @@ gs_plugin_destroy (GsPlugin *plugin)
 	g_free (priv->shell_version);
 	if (priv->proxy != NULL)
 		g_object_unref (priv->proxy);
+	g_object_unref (priv->cached_origin);
 }
 
 void
@@ -82,12 +96,6 @@ gs_plugin_adopt_app (GsPlugin *plugin, GsApp *app)
 {
 	if (gs_app_get_kind (app) == AS_APP_KIND_SHELL_EXTENSION)
 		gs_app_set_management_plugin (app, gs_plugin_get_name (plugin));
-}
-
-static gchar *
-gs_plugin_shell_extensions_id_from_uuid (const gchar *uuid)
-{
-	return g_strdup_printf ("%s.shell-extension", uuid);
 }
 
 static AsAppState
@@ -120,12 +128,11 @@ gs_plugin_shell_extensions_add_app (GsPlugin *plugin,
 	gchar *str;
 	GVariant *val;
 	g_autofree gchar *id = NULL;
-	g_autofree gchar *id_prefix = NULL;
 	g_autoptr(AsIcon) ic = NULL;
 
-	id = gs_plugin_shell_extensions_id_from_uuid (uuid);
-	id_prefix = g_strdup_printf ("user:%s", id);
-	gs_app_set_id (app, id_prefix);
+	id = as_utils_appstream_id_build (uuid);
+	gs_app_set_id (app, id);
+	gs_app_set_scope (app, AS_APP_SCOPE_USER);
 	gs_app_set_metadata (app, "GnomeSoftware::Creator",
 			     gs_plugin_get_name (plugin));
 	gs_app_set_management_plugin (app, gs_plugin_get_name (plugin));
@@ -141,8 +148,10 @@ gs_plugin_shell_extensions_add_app (GsPlugin *plugin,
 						 AS_MARKUP_CONVERT_FORMAT_SIMPLE,
 						 NULL);
 			tmp2 = as_markup_convert_simple (tmp1, error);
-			if (tmp2 == NULL)
+			if (tmp2 == NULL) {
+				gs_utils_error_convert_appstream (error);
 				return FALSE;
+			}
 			gs_app_set_description (app, GS_APP_QUALITY_NORMAL, tmp2);
 			continue;
 		}
@@ -267,8 +276,10 @@ gs_plugin_setup (GsPlugin *plugin, GCancellable *cancellable, GError **error)
 						     "org.gnome.Shell.Extensions",
 						     cancellable,
 						     error);
-	if (priv->proxy == NULL)
+	if (priv->proxy == NULL) {
+		gs_utils_error_convert_gio (error);
 		return FALSE;
+	}
 	g_signal_connect (priv->proxy, "g-signal",
 			  G_CALLBACK (gs_plugin_shell_extensions_changed_cb), plugin);
 
@@ -301,8 +312,11 @@ gs_plugin_add_installed (GsPlugin *plugin,
 					 -1,
 					 cancellable,
 					 error);
-	if (retval == NULL)
+	if (retval == NULL) {
+		gs_utils_error_convert_gdbus (error);
+		gs_utils_error_convert_gio (error);
 		return FALSE;
+	}
 
 	/* parse each installed extension */
 	g_variant_get (retval, "(a{sa{sv}})", &iter);
@@ -418,7 +432,7 @@ gs_plugin_shell_extensions_parse_version (GsPlugin *plugin,
 	if (version == 0) {
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_INVALID_FORMAT,
 				     "no version in map!");
 		return FALSE;
 	}
@@ -449,8 +463,10 @@ gs_plugin_shell_extensions_parse_app (GsPlugin *plugin,
 	if (tmp != NULL) {
 		g_autofree gchar *desc = NULL;
 		desc = as_markup_import (tmp, AS_MARKUP_CONVERT_FORMAT_SIMPLE, error);
-		if (desc == NULL)
+		if (desc == NULL) {
+			gs_utils_error_convert_appstream (error);
 			return NULL;
+		}
 		as_app_set_description (app, NULL, desc);
 	}
 	tmp = json_object_get_string_member (json_app, "name");
@@ -459,7 +475,7 @@ gs_plugin_shell_extensions_parse_app (GsPlugin *plugin,
 	tmp = json_object_get_string_member (json_app, "uuid");
 	if (tmp != NULL) {
 		g_autofree gchar *id = NULL;
-		id = gs_plugin_shell_extensions_id_from_uuid (tmp);
+		id = as_utils_appstream_id_build (tmp);
 		as_app_set_id (app, id);
 		as_app_add_metadata (app, "shell-extensions::uuid", tmp);
 	}
@@ -541,27 +557,29 @@ gs_plugin_shell_extensions_parse_apps (GsPlugin *plugin,
 	if (data == NULL) {
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_INVALID_FORMAT,
 				     "server returned no data");
 		return NULL;
 	}
 
 	/* parse the data and find the success */
 	json_parser = json_parser_new ();
-	if (!json_parser_load_from_data (json_parser, data, data_len, error))
+	if (!json_parser_load_from_data (json_parser, data, data_len, error)) {
+		gs_utils_error_convert_json_glib (error);
 		return NULL;
+	}
 	json_root = json_parser_get_root (json_parser);
 	if (json_root == NULL) {
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_INVALID_FORMAT,
 				     "no data root");
 		return NULL;
 	}
 	if (json_node_get_node_type (json_root) != JSON_NODE_OBJECT) {
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_INVALID_FORMAT,
 				     "no data object");
 		return NULL;
 	}
@@ -569,7 +587,7 @@ gs_plugin_shell_extensions_parse_apps (GsPlugin *plugin,
 	if (json_item == NULL) {
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_INVALID_FORMAT,
 				     "no data object");
 		return NULL;
 	}
@@ -580,7 +598,7 @@ gs_plugin_shell_extensions_parse_apps (GsPlugin *plugin,
 	if (json_extensions == NULL) {
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_INVALID_FORMAT,
 				     "no extensions object");
 		return NULL;
 	}
@@ -588,7 +606,7 @@ gs_plugin_shell_extensions_parse_apps (GsPlugin *plugin,
 	if (json_extensions_array == NULL) {
 		g_set_error_literal (error,
 				     GS_PLUGIN_ERROR,
-				     GS_PLUGIN_ERROR_FAILED,
+				     GS_PLUGIN_ERROR_INVALID_FORMAT,
 				     "no extensions array");
 		return NULL;
 	}
@@ -650,8 +668,10 @@ gs_plugin_shell_extensions_get_apps (GsPlugin *plugin,
 			       SHELL_EXTENSIONS_API_URI,
 			       priv->shell_version);
 	data = gs_plugin_download_data (plugin, dummy, uri, cancellable, error);
-	if (data == NULL)
+	if (data == NULL) {
+		gs_utils_error_add_unique_id (error, priv->cached_origin);
 		return NULL;
+	}
 	apps = gs_plugin_shell_extensions_parse_apps (plugin,
 						      g_bytes_get_data (data, NULL),
 						      (gssize) g_bytes_get_size (data),
@@ -781,6 +801,7 @@ gs_plugin_app_remove (GsPlugin *plugin,
 					 cancellable,
 					 error);
 	if (retval == NULL) {
+		gs_utils_error_convert_gio (error);
 		gs_app_set_state_recover (app);
 		return FALSE;
 	}
@@ -791,7 +812,7 @@ gs_plugin_app_remove (GsPlugin *plugin,
 		gs_app_set_state_recover (app);
 		g_set_error (error,
 			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
+			     GS_PLUGIN_ERROR_NOT_SUPPORTED,
 			     "failed to uninstall %s",
 			     gs_app_get_id (app));
 		return FALSE;
@@ -883,8 +904,10 @@ gs_plugin_launch (GsPlugin *plugin,
 					 -1,
 					 cancellable,
 					 error);
-	if (retval == NULL)
+	if (retval == NULL) {
+		gs_utils_error_convert_gio (error);
 		return FALSE;
+	}
 	return TRUE;
 }
 

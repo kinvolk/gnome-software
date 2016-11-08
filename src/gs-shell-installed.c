@@ -98,6 +98,14 @@ row_unrevealed (GObject *row, GParamSpec *pspec, gpointer data)
 }
 
 static void
+gs_shell_installed_unreveal_row (GsAppRow *app_row)
+{
+	gs_app_row_unreveal (app_row);
+	g_signal_connect (app_row, "unrevealed",
+			  G_CALLBACK (row_unrevealed), NULL);
+}
+
+static void
 gs_shell_installed_app_removed (GsPage *page, GsApp *app)
 {
 	GsShellInstalled *self = GS_SHELL_INSTALLED (page);
@@ -108,9 +116,7 @@ gs_shell_installed_app_removed (GsPage *page, GsApp *app)
 	for (l = children; l; l = l->next) {
 		GsAppRow *app_row = GS_APP_ROW (l->data);
 		if (gs_app_row_get_app (app_row) == app) {
-			gs_app_row_unreveal (app_row);
-			g_signal_connect (app_row, "unrevealed",
-			                  G_CALLBACK (row_unrevealed), NULL);
+			gs_shell_installed_unreveal_row (app_row);
 		}
 	}
 }
@@ -129,8 +135,15 @@ static gboolean
 gs_shell_installed_invalidate_sort_idle (gpointer user_data)
 {
 	GsAppRow *app_row = user_data;
+	GsApp *app = gs_app_row_get_app (app_row);
+	AsAppState state = gs_app_get_state (app);
 
 	gtk_list_box_row_changed (GTK_LIST_BOX_ROW (app_row));
+
+	/* if the app has been uninstalled (which can happen from another view)
+	 * we should removed it from the installed view */
+	if (state == AS_APP_STATE_AVAILABLE || state == AS_APP_STATE_UNKNOWN)
+		gs_shell_installed_unreveal_row (app_row);
 
 	g_object_unref (app_row);
 	return G_SOURCE_REMOVE;
@@ -147,7 +160,7 @@ gs_shell_installed_notify_state_changed_cb (GsApp *app,
 static void selection_changed (GsShellInstalled *self);
 
 static void
-gs_shell_installed_add_app (GsShellInstalled *self, GsApp *app)
+gs_shell_installed_add_app (GsShellInstalled *self, GsAppList *list, GsApp *app)
 {
 	GtkWidget *app_row;
 
@@ -155,8 +168,9 @@ gs_shell_installed_add_app (GsShellInstalled *self, GsApp *app)
 	gs_app_row_set_colorful (GS_APP_ROW (app_row), FALSE);
 	gs_app_row_set_show_folders (GS_APP_ROW (app_row), TRUE);
 	gs_app_row_set_show_buttons (GS_APP_ROW (app_row), TRUE);
-	gs_app_row_set_show_source (GS_APP_ROW (app_row),
-				    !gs_app_has_quirk (app, AS_APP_QUIRK_PROVENANCE));
+	if (!gs_app_has_quirk (app, AS_APP_QUIRK_PROVENANCE) ||
+	    gs_utils_list_has_app_fuzzy (list, app))
+		gs_app_row_set_show_source (GS_APP_ROW (app_row), TRUE);
 	g_signal_connect (app_row, "button-clicked",
 			  G_CALLBACK (gs_shell_installed_app_remove_cb), self);
 	g_signal_connect_object (app, "notify::state",
@@ -197,16 +211,19 @@ gs_shell_installed_get_installed_cb (GObject *source_object,
 						      res,
 						      &error);
 	if (list == NULL) {
-		if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+		if (!g_error_matches (error, GS_PLUGIN_ERROR, GS_PLUGIN_ERROR_CANCELLED))
 			g_warning ("failed to get installed apps: %s", error->message);
 		goto out;
 	}
 	for (i = 0; i < gs_app_list_length (list); i++) {
 		app = gs_app_list_index (list, i);
-		gs_shell_installed_add_app (self, app);
+		gs_shell_installed_add_app (self, list, app);
 	}
 out:
 	gs_shell_installed_pending_apps_changed_cb (plugin_loader, self);
+
+	/* seems a good place */
+	gs_shell_profile_dump (self->shell);
 }
 
 static void
@@ -474,7 +491,7 @@ gs_shell_installed_pending_apps_changed_cb (GsPluginLoader *plugin_loader,
 
 		/* do not to add pending apps more than once. */
 		if (gs_shell_installed_has_app (self, app) == FALSE)
-			gs_shell_installed_add_app (self, app);
+			gs_shell_installed_add_app (self, pending, app);
 
 		/* incremement the label */
 		cnt++;

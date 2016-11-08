@@ -36,6 +36,7 @@
 #include <fnmatch.h>
 #include <math.h>
 #include <glib/gstdio.h>
+#include <json-glib/json-glib.h>
 
 #ifdef HAVE_POLKIT
 #include <polkit/polkit.h>
@@ -314,7 +315,7 @@ gs_utils_get_desktop_app_info (const gchar *id)
 /**
  * gs_utils_symlink:
  * @target: the full path of the symlink to create
- * @source: where the symlink should point to
+ * @linkpath: where the symlink should point to
  * @error: A #GError, or %NULL
  *
  * Creates a symlink that can cross filesystem boundaries.
@@ -330,7 +331,7 @@ gs_utils_symlink (const gchar *target, const gchar *linkpath, GError **error)
 	if (symlink (target, linkpath) != 0) {
 		g_set_error (error,
 			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
+			     GS_PLUGIN_ERROR_WRITE_FAILED,
 			     "failed to create symlink from %s to %s",
 			     linkpath, target);
 		return FALSE;
@@ -353,7 +354,7 @@ gs_utils_unlink (const gchar *filename, GError **error)
 	if (g_unlink (filename) != 0) {
 		g_set_error (error,
 			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
+			     GS_PLUGIN_ERROR_DELETE_FAILED,
 			     "failed to delete %s",
 			     filename);
 		return FALSE;
@@ -384,7 +385,7 @@ gs_utils_rmtree_real (const gchar *directory, GError **error)
 			if (g_unlink (src) != 0) {
 				g_set_error (error,
 					     GS_PLUGIN_ERROR,
-					     GS_PLUGIN_ERROR_FAILED,
+					     GS_PLUGIN_ERROR_DELETE_FAILED,
 					     "Failed to delete: %s", src);
 				return FALSE;
 			}
@@ -394,7 +395,7 @@ gs_utils_rmtree_real (const gchar *directory, GError **error)
 	if (g_rmdir (directory) != 0) {
 		g_set_error (error,
 			     GS_PLUGIN_ERROR,
-			     GS_PLUGIN_ERROR_FAILED,
+			     GS_PLUGIN_ERROR_DELETE_FAILED,
 			     "Failed to remove: %s", directory);
 		return FALSE;
 	}
@@ -501,6 +502,298 @@ gs_utils_get_wilson_rating (guint64 star1,
 
 	/* return rounded up integer */
 	return (gint) ceil (val);
+}
+
+/**
+ * gs_utils_error_add_unique_id:
+ * @error: a #GError
+ * @app: a #GsApp
+ *
+ * Adds a unique ID prefix to the error.
+ *
+ * Since: 3.22
+ **/
+void
+gs_utils_error_add_unique_id (GError **error, GsApp *app)
+{
+	if (error == NULL || *error == NULL)
+		return;
+	g_prefix_error (error, "[%s] ", gs_app_get_unique_id (app));
+}
+
+/**
+ * gs_utils_error_strip_unique_id:
+ * @error: a #GError
+ * @app: a #GsApp
+ *
+ * Removes a possible unique ID prefix from the error.
+ *
+ * Since: 3.22
+ **/
+void
+gs_utils_error_strip_unique_id (GError *error)
+{
+	gchar *str;
+	if (error == NULL)
+		return;
+	if (!g_str_has_prefix (error->message, "["))
+		return;
+	str = g_strstr_len (error->message, -1, " ");
+	if (str == NULL)
+		return;
+
+	/* gahh, my eyes are bleeding */
+	str = g_strdup (str + 1);
+	g_free (error->message);
+	error->message = str;
+}
+
+/**
+ * gs_utils_error_convert_gdbus:
+ * @perror: a pointer to a #GError, or %NULL
+ *
+ * Converts the #GDBusError to an error with a GsPluginError domain.
+ *
+ * Returns: %TRUE if the error was converted, or already correct
+ **/
+gboolean
+gs_utils_error_convert_gdbus (GError **perror)
+{
+	GError *error = perror != NULL ? *perror : NULL;
+
+	/* not set */
+	if (error == NULL)
+		return FALSE;
+	if (error->domain == GS_PLUGIN_ERROR)
+		return TRUE;
+	if (error->domain != G_DBUS_ERROR)
+		return FALSE;
+	switch (error->code) {
+	case G_DBUS_ERROR_FAILED:
+	case G_DBUS_ERROR_NO_REPLY:
+	case G_DBUS_ERROR_TIMEOUT:
+		error->code = GS_PLUGIN_ERROR_FAILED;
+		break;
+	case G_DBUS_ERROR_IO_ERROR:
+	case G_DBUS_ERROR_NAME_HAS_NO_OWNER:
+	case G_DBUS_ERROR_NOT_SUPPORTED:
+	case G_DBUS_ERROR_SERVICE_UNKNOWN:
+	case G_DBUS_ERROR_UNKNOWN_INTERFACE:
+	case G_DBUS_ERROR_UNKNOWN_METHOD:
+	case G_DBUS_ERROR_UNKNOWN_OBJECT:
+	case G_DBUS_ERROR_UNKNOWN_PROPERTY:
+		error->code = GS_PLUGIN_ERROR_NOT_SUPPORTED;
+		break;
+	case G_DBUS_ERROR_NO_MEMORY:
+		error->code = GS_PLUGIN_ERROR_NO_SPACE;
+		break;
+	case G_DBUS_ERROR_ACCESS_DENIED:
+	case G_DBUS_ERROR_AUTH_FAILED:
+		error->code = GS_PLUGIN_ERROR_NO_SECURITY;
+		break;
+	case G_DBUS_ERROR_NO_NETWORK:
+		error->code = GS_PLUGIN_ERROR_NO_NETWORK;
+		break;
+	case G_DBUS_ERROR_INVALID_FILE_CONTENT:
+		error->code = GS_PLUGIN_ERROR_INVALID_FORMAT;
+		break;
+	default:
+		g_warning ("can't reliably fixup error code %i in domain %s",
+			   error->code, g_quark_to_string (error->domain));
+		error->code = GS_PLUGIN_ERROR_FAILED;
+		break;
+	}
+	error->domain = GS_PLUGIN_ERROR;
+	return TRUE;
+}
+
+/**
+ * gs_utils_error_convert_gio:
+ * @perror: a pointer to a #GError, or %NULL
+ *
+ * Converts the #GIOError to an error with a GsPluginError domain.
+ *
+ * Returns: %TRUE if the error was converted, or already correct
+ **/
+gboolean
+gs_utils_error_convert_gio (GError **perror)
+{
+	GError *error = perror != NULL ? *perror : NULL;
+
+	/* not set */
+	if (error == NULL)
+		return FALSE;
+	if (error->domain == GS_PLUGIN_ERROR)
+		return TRUE;
+	if (error->domain != G_IO_ERROR)
+		return FALSE;
+	switch (error->code) {
+	case G_IO_ERROR_FAILED:
+	case G_IO_ERROR_TIMED_OUT:
+	case G_IO_ERROR_NOT_FOUND:
+		error->code = GS_PLUGIN_ERROR_FAILED;
+		break;
+	case G_IO_ERROR_NOT_SUPPORTED:
+		error->code = GS_PLUGIN_ERROR_NOT_SUPPORTED;
+		break;
+	case G_IO_ERROR_CANCELLED:
+		error->code = GS_PLUGIN_ERROR_CANCELLED;
+		break;
+	case G_IO_ERROR_NO_SPACE:
+		error->code = GS_PLUGIN_ERROR_NO_SPACE;
+		break;
+	case G_IO_ERROR_HOST_NOT_FOUND:
+	case G_IO_ERROR_HOST_UNREACHABLE:
+	case G_IO_ERROR_CONNECTION_REFUSED:
+	case G_IO_ERROR_PROXY_FAILED:
+	case G_IO_ERROR_PROXY_AUTH_FAILED:
+	case G_IO_ERROR_PROXY_NOT_ALLOWED:
+		error->code = GS_PLUGIN_ERROR_DOWNLOAD_FAILED;
+		break;
+	case G_IO_ERROR_NETWORK_UNREACHABLE:
+		error->code = GS_PLUGIN_ERROR_NO_NETWORK;
+		break;
+	default:
+		g_warning ("can't reliably fixup error code %i in domain %s",
+			   error->code, g_quark_to_string (error->domain));
+		error->code = GS_PLUGIN_ERROR_FAILED;
+		break;
+	}
+	error->domain = GS_PLUGIN_ERROR;
+	return TRUE;
+}
+
+/**
+ * gs_utils_error_convert_gdk_pixbuf:
+ * @perror: a pointer to a #GError, or %NULL
+ *
+ * Converts the #GdkPixbufError to an error with a GsPluginError domain.
+ *
+ * Returns: %TRUE if the error was converted, or already correct
+ **/
+gboolean
+gs_utils_error_convert_gdk_pixbuf (GError **perror)
+{
+	GError *error = perror != NULL ? *perror : NULL;
+
+	/* not set */
+	if (error == NULL)
+		return FALSE;
+	if (error->domain == GS_PLUGIN_ERROR)
+		return TRUE;
+	if (error->domain != GDK_PIXBUF_ERROR)
+		return FALSE;
+	switch (error->code) {
+	case GDK_PIXBUF_ERROR_UNSUPPORTED_OPERATION:
+	case GDK_PIXBUF_ERROR_UNKNOWN_TYPE:
+		error->code = GS_PLUGIN_ERROR_NOT_SUPPORTED;
+		break;
+	case GDK_PIXBUF_ERROR_FAILED:
+		error->code = GS_PLUGIN_ERROR_FAILED;
+		break;
+	case GDK_PIXBUF_ERROR_CORRUPT_IMAGE:
+		error->code = GS_PLUGIN_ERROR_INVALID_FORMAT;
+		break;
+	default:
+		g_warning ("can't reliably fixup error code %i in domain %s",
+			   error->code, g_quark_to_string (error->domain));
+		error->code = GS_PLUGIN_ERROR_FAILED;
+		break;
+	}
+	error->domain = GS_PLUGIN_ERROR;
+	return TRUE;
+}
+
+/**
+ * gs_utils_error_convert_json_glib:
+ * @perror: a pointer to a #GError, or %NULL
+ *
+ * Converts the #JsonParserError to an error with a GsPluginError domain.
+ *
+ * Returns: %TRUE if the error was converted, or already correct
+ **/
+gboolean
+gs_utils_error_convert_json_glib (GError **perror)
+{
+	GError *error = perror != NULL ? *perror : NULL;
+
+	/* not set */
+	if (error == NULL)
+		return FALSE;
+	if (error->domain == GS_PLUGIN_ERROR)
+		return TRUE;
+	if (error->domain != JSON_PARSER_ERROR)
+		return FALSE;
+	switch (error->code) {
+	case JSON_PARSER_ERROR_UNKNOWN:
+		error->code = GS_PLUGIN_ERROR_FAILED;
+	default:
+		error->code = GS_PLUGIN_ERROR_INVALID_FORMAT;
+		break;
+	}
+	error->domain = GS_PLUGIN_ERROR;
+	return TRUE;
+}
+
+/**
+ * gs_utils_error_convert_appstream:
+ * @perror: a pointer to a #GError, or %NULL
+ *
+ * Converts the various AppStream error types to an error with a GsPluginError
+ * domain.
+ *
+ * Returns: %TRUE if the error was converted, or already correct
+ **/
+gboolean
+gs_utils_error_convert_appstream (GError **perror)
+{
+	GError *error = perror != NULL ? *perror : NULL;
+
+	/* not set */
+	if (error == NULL)
+		return FALSE;
+	if (error->domain == GS_PLUGIN_ERROR)
+		return TRUE;
+
+	/* custom to this plugin */
+	if (error->domain == AS_UTILS_ERROR) {
+		switch (error->code) {
+		case AS_UTILS_ERROR_INVALID_TYPE:
+			error->code = GS_PLUGIN_ERROR_INVALID_FORMAT;
+			break;
+		case AS_UTILS_ERROR_FAILED:
+		default:
+			error->code = GS_PLUGIN_ERROR_FAILED;
+			break;
+		}
+	} else if (error->domain == AS_STORE_ERROR) {
+		switch (error->code) {
+		case AS_UTILS_ERROR_FAILED:
+		default:
+			error->code = GS_PLUGIN_ERROR_FAILED;
+			break;
+		}
+	} else if (error->domain == G_FILE_ERROR) {
+		switch (error->code) {
+		case G_FILE_ERROR_EXIST:
+		case G_FILE_ERROR_ACCES:
+		case G_FILE_ERROR_PERM:
+			error->code = GS_PLUGIN_ERROR_NO_SECURITY;
+			break;
+		case G_FILE_ERROR_NOSPC:
+			error->code = GS_PLUGIN_ERROR_NO_SPACE;
+			break;
+		default:
+			error->code = GS_PLUGIN_ERROR_FAILED;
+			break;
+		}
+	} else {
+		g_warning ("can't reliably fixup error from domain %s",
+			   g_quark_to_string (error->domain));
+		error->code = GS_PLUGIN_ERROR_FAILED;
+	}
+	error->domain = GS_PLUGIN_ERROR;
+	return TRUE;
 }
 
 /* vim: set noexpandtab: */
