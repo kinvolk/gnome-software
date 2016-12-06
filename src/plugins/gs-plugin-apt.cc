@@ -144,6 +144,15 @@ gs_plugin_destroy (GsPlugin *plugin)
 	g_mutex_clear (&priv->mutex);
 }
 
+void
+gs_plugin_adopt_app (GsPlugin *plugin, GsApp *app)
+{
+	if (gs_app_get_bundle_kind (app) == AS_BUNDLE_KIND_PACKAGE &&
+	    gs_app_get_scope (app) == AS_APP_SCOPE_SYSTEM) {
+		gs_app_set_management_plugin (app, "apt");
+		return;
+	}
+}
 
 static void
 read_list_file_cb (GObject *object,
@@ -855,11 +864,7 @@ app_is_ours (GsApp *app)
 {
 	const gchar *management_plugin = gs_app_get_management_plugin (app);
 
-	// FIXME: Since appstream marks all packages as owned by PackageKit and
-	// we are replacing PackageKit we need to accept those packages
-	const gchar *our_management_plugins[] = { "PackageKit", "apt", NULL };
-
-	return g_strv_contains (our_management_plugins, management_plugin);
+	return g_strcmp0 (management_plugin, "apt") == 0;
 }
 
 gboolean
