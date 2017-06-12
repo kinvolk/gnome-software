@@ -110,7 +110,7 @@ execute_search (GsShellSearchProvider  *self,
 	g_autofree gchar *string = NULL;
 
 	string = g_strjoinv (" ", terms);
-
+    g_print("execute_search with term: %s\n", string);
 	if (self->cancellable != NULL) {
 		g_cancellable_cancel (self->cancellable);
 		g_clear_object (&self->cancellable);
@@ -146,6 +146,7 @@ handle_get_initial_result_set (GsShellSearchProvider2	*skeleton,
 {
 	GsShellSearchProvider *self = user_data;
 
+    g_print("we are in the intial, term: %s\n", terms[0]);
 	g_debug ("****** GetInitialResultSet");
 	execute_search (self, invocation, terms);
 	return TRUE;
@@ -160,6 +161,7 @@ handle_get_subsearch_result_set (GsShellSearchProvider2	*skeleton,
 {
 	GsShellSearchProvider *self = user_data;
 
+    g_print("we are in the subsearch, term: %s\n", terms[0]);
 	g_debug ("****** GetSubSearchResultSet");
 	execute_search (self, invocation, terms);
 	return TRUE;
@@ -178,6 +180,7 @@ handle_get_result_metas (GsShellSearchProvider2	*skeleton,
 	gint i;
 	GVariantBuilder builder;
 	GError *error = NULL;
+    gchar temp;
 
 	g_debug ("****** GetResultMetas");
 
@@ -200,7 +203,8 @@ handle_get_result_metas (GsShellSearchProvider2	*skeleton,
 			g_clear_error (&error);
 			continue;
 		}
-
+        temp = g_variant_new_string (gs_app_get_name (app));
+        g_print("metas app: %s\n", temp);
 		g_variant_builder_init (&meta, G_VARIANT_TYPE ("a{sv}"));
 		g_variant_builder_add (&meta, "{sv}", "id", g_variant_new_string (gs_app_get_id (app)));
 		g_variant_builder_add (&meta, "{sv}", "name", g_variant_new_string (gs_app_get_name (app)));
