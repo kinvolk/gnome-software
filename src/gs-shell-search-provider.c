@@ -91,9 +91,24 @@ search_done_cb (GObject *source,
 	g_variant_builder_init (&builder, G_VARIANT_TYPE ("as"));
 	for (i = 0; i < gs_app_list_length (list); i++) {
 		GsApp *app = gs_app_list_index (list, i);
+		GVariantBuilder meta;
+		GVariant *meta_variant;
+		GdkPixbuf *pixbuf;
+
 		if (gs_app_get_state (app) != AS_APP_STATE_AVAILABLE)
 			continue;
+
 		g_variant_builder_add (&builder, "s", gs_app_get_unique_id (app));
+
+		g_variant_builder_init (&meta, G_VARIANT_TYPE ("a{sv}"));
+		g_variant_builder_add (&meta, "{sv}", "id", g_variant_new_string (gs_app_get_unique_id (app)));
+		g_variant_builder_add (&meta, "{sv}", "name", g_variant_new_string (gs_app_get_name (app)));
+		pixbuf = gs_app_get_pixbuf (app);
+		if (pixbuf != NULL)
+		        g_variant_builder_add (&meta, "{sv}", "icon", g_icon_serialize (G_ICON (pixbuf)));
+		g_variant_builder_add (&meta, "{sv}", "description", g_variant_new_string (gs_app_get_summary (app)));
+		meta_variant = g_variant_builder_end (&meta);
+		g_hash_table_insert (self->metas_cache, g_strdup (gs_app_get_unique_id (app)), g_variant_ref_sink (meta_variant));
 	}
 	g_dbus_method_invocation_return_value (search->invocation, g_variant_new ("(as)", &builder));
 
@@ -180,38 +195,6 @@ handle_get_result_metas (GsShellSearchProvider2	*skeleton,
 	GError *error = NULL;
 
 	g_debug ("****** GetResultMetas");
-
-	for (i = 0; results[i]; i++) {
-		g_autoptr(GsApp) app = NULL;
-
-		if (g_hash_table_lookup (self->metas_cache, results[i]))
-			continue;
-
-		/* find the application with this ID */
-		app = gs_plugin_loader_get_app_by_id (self->plugin_loader,
-						      results[i],
-						      GS_PLUGIN_REFINE_FLAGS_REQUIRE_ICON |
-						      GS_PLUGIN_REFINE_FLAGS_REQUIRE_DESCRIPTION,
-						      NULL,
-						      &error);
-		if (app == NULL) {
-			g_warning ("failed to refine %s: %s",
-				   results[i], error->message);
-			g_clear_error (&error);
-			continue;
-		}
-
-		g_variant_builder_init (&meta, G_VARIANT_TYPE ("a{sv}"));
-		g_variant_builder_add (&meta, "{sv}", "id", g_variant_new_string (gs_app_get_unique_id (app)));
-		g_variant_builder_add (&meta, "{sv}", "name", g_variant_new_string (gs_app_get_name (app)));
-		pixbuf = gs_app_get_pixbuf (app);
-		if (pixbuf != NULL)
-			g_variant_builder_add (&meta, "{sv}", "icon", g_icon_serialize (G_ICON (pixbuf)));
-		g_variant_builder_add (&meta, "{sv}", "description", g_variant_new_string (gs_app_get_summary (app)));
-		meta_variant = g_variant_builder_end (&meta);
-		g_hash_table_insert (self->metas_cache, g_strdup (gs_app_get_unique_id (app)), g_variant_ref_sink (meta_variant));
-
-	}
 
 	g_variant_builder_init (&builder, G_VARIANT_TYPE ("aa{sv}"));
 	for (i = 0; results[i]; i++) {
