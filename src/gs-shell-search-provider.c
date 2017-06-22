@@ -223,7 +223,7 @@ handle_activate_result (GsShellSearchProvider2 	     *skeleton,
 	string = g_strjoinv (" ", terms);
 
 	g_action_group_activate_action (G_ACTION_GROUP (app), "details",
-				  	g_variant_new ("(ss)", result, string));
+					g_variant_new ("(ss)", result, ""));
 
 	gs_shell_search_provider2_complete_activate_result (skeleton, invocation);
 	return TRUE;
